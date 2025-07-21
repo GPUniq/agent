@@ -7,6 +7,8 @@ import importlib
 import socket
 import platform
 import re
+import threading
+import time
 
 # Список необходимых пакетов
 REQUIRED_PACKAGES = ["psutil", "requests"]
@@ -393,6 +395,82 @@ def get_network_usage():
         pass
     return usage
 
+# === Docker и SSH ===
+def run_docker_container(task):
+    import subprocess
+    docker_image = task.get('docker_image')
+    ram = task.get('ram_allocated')
+    storage = task.get('storage_allocated')
+    gpus = task.get('gpus_allocated')
+    cpus = task.get('cpus_allocated')
+    # Собираем docker run команду
+    cmd = [
+        'docker', 'run', '-d', '--rm',
+        '--name', f"task_{task.get('id', int(time.time()))}",
+        '-p', '21234:22',  # Пробрасываем порт для ssh
+    ]
+    if ram:
+        cmd += ['--memory', f'{ram}g']
+    if cpus:
+        cpu_count = cpus.get('count', 1) if isinstance(cpus, dict) else cpus
+        cmd += ['--cpus', str(cpu_count)]
+    if gpus:
+        cmd += ['--gpus', 'all']
+    if storage:
+        # Можно добавить volume, если нужно
+        pass
+    cmd += [docker_image]
+    # Предполагаем, что образ уже настроен для ssh (sshd)
+    try:
+        container_id = subprocess.check_output(cmd).decode().strip()
+        return container_id
+    except Exception as e:
+        print(f"[ERROR] Docker run failed: {e}")
+        return None
+
+def poll_for_tasks(agent_id, secret_key):
+    url = f"{BASE_URL}/v1/agents/{agent_id}/tasks/pull"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Agent-Secret-Key": secret_key
+    }
+    while True:
+        try:
+            response = requests.post(url, headers=headers, timeout=10)
+            if response.status_code == 200:
+                resp_json = response.json()
+                task = resp_json.get('data')
+                if task:
+                    print(f"[INFO] New task received: {task}")
+                    container_id = run_docker_container(task)
+                    if container_id:
+                        print(f"[INFO] Docker container started: {container_id}")
+                        print(f"[INFO] SSH connect: ssh user@95.165.77.84 -p 21234")
+                        # Можно отправить статус задачи обратно на сервер
+                        send_task_status(agent_id, task.get('id'), secret_key, container_id)
+            else:
+                print(f"[INFO] No new task. Status: {response.status_code}")
+        except Exception as e:
+            print(f"[ERROR] Polling failed: {e}")
+        time.sleep(10)  # Пауза между запросами
+
+def send_task_status(agent_id, task_id, secret_key, container_id):
+    url = f"{BASE_URL}/v1/agents/{agent_id}/tasks/{task_id}/status"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Agent-Secret-Key": secret_key
+    }
+    data = {
+        "status": "running",
+        "container_id": container_id,
+        "output": f"ssh user@95.165.77.84 -p 21234"
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=10)
+        print(f"[INFO] Task status updated: {response.status_code}")
+    except Exception as e:
+        print(f"[ERROR] Failed to update task status: {e}")
+
 if __name__ == "__main__":
     import json
     if len(sys.argv) < 3:
@@ -415,3 +493,10 @@ if __name__ == "__main__":
     }
     print(json.dumps(data, indent=2, ensure_ascii=False))
     send_init_to_server(agent_id, secret_key, data)
+
+    # Запускаем polling в отдельном потоке
+    polling_thread = threading.Thread(target=poll_for_tasks, args=(agent_id, secret_key), daemon=True)
+    polling_thread.start()
+    # Основной поток просто ждет
+    while True:
+        time.sleep(60)
