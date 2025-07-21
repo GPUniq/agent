@@ -395,11 +395,12 @@ def get_network_usage():
 
 if __name__ == "__main__":
     import json
-    # Пример использования:
-    agent_id = 4  # <-- Замените на ваш agent_id
-    secret_key = "U-xuEUEwDd4PSmVpRH_TDB-g4AtZGXMvOTP8xLiRDA8"  # <-- Замените на ваш ключ
+    if len(sys.argv) < 3:
+        print("Usage: python installator.py <agent_id> <secret_key>")
+        sys.exit(1)
+    agent_id = sys.argv[1]
+    secret_key = sys.argv[2]
     system_info = get_system_info()
-    # Добавьте сюда location, price_per_hour, max_duration_hours, status, usage-метрики и т.д. по необходимости
     data = {
         **system_info,
         "location": "Moscow, Russia",
