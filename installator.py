@@ -1,5 +1,4 @@
-# === Константы ===
-BASE_URL = "http://0.0.0.0:8777"  # <-- Замените на ваш адрес
+BASE_URL = "http://0.0.0.0:8777"
 
 import sys
 import subprocess
@@ -440,7 +439,7 @@ def poll_for_tasks(agent_id, secret_key):
             if response.status_code == 200:
                 resp_json = response.json()
                 task = resp_json.get('data')
-                if task:
+                if task and task.get('task_id') is not None and task.get('task_data') is not None:
                     print(f"[INFO] New task received: {task}")
                     container_id = run_docker_container(task)
                     if container_id:
@@ -448,8 +447,11 @@ def poll_for_tasks(agent_id, secret_key):
                         print(f"[INFO] SSH connect: ssh user@95.165.77.84 -p 21234")
                         # Можно отправить статус задачи обратно на сервер
                         send_task_status(agent_id, task.get('id'), secret_key, container_id)
+                else:
+                    print(f"[INFO] No valid task received: {task}")
             else:
                 print(f"[INFO] No new task. Status: {response.status_code}")
+                print(f"[INFO] Server response body: {response.text}")
         except Exception as e:
             print(f"[ERROR] Polling failed: {e}")
         time.sleep(10)  # Пауза между запросами
