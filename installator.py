@@ -8,6 +8,9 @@ import platform
 import re
 import threading
 import time
+import os
+
+AGENT_ID_FILE = ".agent_id"
 
 # Список необходимых пакетов
 REQUIRED_PACKAGES = ["psutil", "requests"]
@@ -473,13 +476,40 @@ def send_task_status(agent_id, task_id, secret_key, container_id):
     except Exception as e:
         print(f"[ERROR] Failed to update task status: {e}")
 
+def confirm_agent(secret_key, data):
+    url = f"{BASE_URL}/v1/agents/confirm"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Agent-Secret-Key": secret_key
+    }
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=10)
+        print(f"[INFO] Confirm response: {response.status_code}")
+        print(response.text)
+        resp_json = response.json()
+        # Ожидаем, что agent_id будет в data
+        agent_id = None
+        if resp_json and isinstance(resp_json, dict):
+            data_field = resp_json.get("data")
+            if data_field and isinstance(data_field, dict):
+                agent_id = data_field.get("agent_id") or data_field.get("id")
+        return agent_id
+    except Exception as e:
+        print(f"[ERROR] Failed to confirm agent: {e}")
+        return None
+
 if __name__ == "__main__":
     import json
-    if len(sys.argv) < 3:
-        print("Usage: python installator.py <agent_id> <secret_key>")
+    if len(sys.argv) < 2:
+        print("Usage: python installator.py <secret_key>")
         sys.exit(1)
-    agent_id = sys.argv[1]
-    secret_key = sys.argv[2]
+    secret_key = sys.argv[1]
+    # Проверяем, есть ли сохранённый agent_id
+    agent_id = None
+    if os.path.exists(AGENT_ID_FILE):
+        with open(AGENT_ID_FILE, "r") as f:
+            agent_id = f.read().strip()
+            print(f"[INFO] Loaded agent_id from {AGENT_ID_FILE}: {agent_id}")
     system_info = get_system_info()
     data = {
         **system_info,
@@ -494,6 +524,17 @@ if __name__ == "__main__":
         "network_usage": get_network_usage(),
     }
     print(json.dumps(data, indent=2, ensure_ascii=False))
+    if not agent_id:
+        # Первый запуск — делаем confirm
+        agent_id = confirm_agent(secret_key, data)
+        if agent_id:    
+            with open(AGENT_ID_FILE, "w") as f:
+                f.write(str(agent_id))
+            print(f"[INFO] Saved agent_id to {AGENT_ID_FILE}: {agent_id}")
+        else:
+            print("[ERROR] Could not obtain agent_id from server. Exiting.")
+            sys.exit(1)
+    # Теперь agent_id есть, делаем init
     send_init_to_server(agent_id, secret_key, data)
 
     # Запускаем polling в отдельном потоке
