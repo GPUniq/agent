@@ -32,7 +32,6 @@ import psutil
 import requests
 
 # Универсальная функция для CPU
-
 def get_cpu_info():
     cpu_info = []
     system = platform.system()
@@ -42,28 +41,85 @@ def get_cpu_info():
         elif system == "Windows":
             model = subprocess.check_output(['wmic', 'cpu', 'get', 'Name'], shell=True).decode(errors='ignore').split('\n')[1].strip()
         elif system == "Linux":
-            with open('/proc/cpuinfo') as f:
-                lines = f.read()
-            match = re.search(r'model name\s+:\s+(.+)', lines)
-            model = match.group(1) if match else platform.processor()
+            # Улучшенное получение информации о CPU для Linux
+            try:
+                with open('/proc/cpuinfo') as f:
+                    lines = f.read()
+                
+                # Ищем модель процессора
+                model_match = re.search(r'model name\s+:\s+(.+)', lines)
+                if model_match:
+                    model = model_match.group(1).strip()
+                else:
+                    # Альтернативный способ через lscpu
+                    try:
+                        lscpu_output = subprocess.check_output(['lscpu']).decode()
+                        model_match = re.search(r'Model name:\s+(.+)', lscpu_output)
+                        model = model_match.group(1).strip() if model_match else platform.processor()
+                    except:
+                        model = platform.processor()
+                
+                # Получаем количество ядер и потоков
+                cores = psutil.cpu_count(logical=False)
+                threads = psutil.cpu_count(logical=True)
+                
+                # Получаем частоту через lscpu
+                freq = None
+                try:
+                    lscpu_output = subprocess.check_output(['lscpu']).decode()
+                    freq_match = re.search(r'CPU max MHz:\s+(\d+)', lscpu_output)
+                    if freq_match:
+                        freq = float(freq_match.group(1)) / 1000  # Конвертируем в GHz
+                    else:
+                        # Альтернативный способ через psutil
+                        cpu_freq = psutil.cpu_freq()
+                        freq = cpu_freq.max / 1000 if cpu_freq else None
+                except:
+                    cpu_freq = psutil.cpu_freq()
+                    freq = cpu_freq.max / 1000 if cpu_freq else None
+                
+                cpu_info.append({
+                    "model": model,
+                    "cores": cores,
+                    "threads": threads,
+                    "freq_ghz": round(freq, 2) if freq else None,
+                    "count": 1
+                })
+            except Exception as e:
+                print(f"[WARNING] CPU info error: {e}")
+                # Fallback к базовой информации
+                cpu_info.append({
+                    "model": platform.processor(),
+                    "cores": psutil.cpu_count(logical=False),
+                    "threads": psutil.cpu_count(logical=True),
+                    "freq_ghz": None,
+                    "count": 1
+                })
         else:
             model = platform.processor()
-        cores = psutil.cpu_count(logical=False)
-        threads = psutil.cpu_count(logical=True)
-        freq = psutil.cpu_freq().max / 1000 if psutil.cpu_freq() else None
+            cores = psutil.cpu_count(logical=False)
+            threads = psutil.cpu_count(logical=True)
+            freq = psutil.cpu_freq().max / 1000 if psutil.cpu_freq() else None
+            cpu_info.append({
+                "model": model,
+                "cores": cores,
+                "threads": threads,
+                "freq_ghz": round(freq, 2) if freq else None,
+                "count": 1
+            })
+    except Exception as e:
+        print(f"[ERROR] CPU info failed: {e}")
+        # Минимальная информация в случае ошибки
         cpu_info.append({
-            "model": model,
-            "cores": cores,
-            "threads": threads,
-            "freq_ghz": round(freq, 2) if freq else None,
+            "model": "Unknown CPU",
+            "cores": psutil.cpu_count(logical=False) or 1,
+            "threads": psutil.cpu_count(logical=True) or 1,
+            "freq_ghz": None,
             "count": 1
         })
-    except Exception:
-        pass
     return cpu_info
 
 # Универсальная функция для RAM
-
 def get_ram_info():
     total_ram_gb = round(psutil.virtual_memory().total / (1024 ** 3))
     ram_type = "Unknown"
@@ -83,19 +139,48 @@ def get_ram_info():
             elif '26' in ram_type_out:
                 ram_type = 'DDR4'
         elif system == "Linux":
+            # Улучшенное определение типа RAM для Linux
             try:
-                ram_type_out = subprocess.check_output(['sudo', 'dmidecode', '-t', 'memory']).decode(errors='ignore')
-                match = re.search(r'Type: (DDR\w*)', ram_type_out)
-                if match:
-                    ram_type = match.group(1)
-            except Exception:
-                pass
-    except Exception:
-        pass
+                # Попробуем через dmidecode (требует sudo)
+                try:
+                    ram_type_out = subprocess.check_output(['sudo', 'dmidecode', '-t', 'memory'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                    match = re.search(r'Type:\s+(DDR\w*)', ram_type_out)
+                    if match:
+                        ram_type = match.group(1)
+                except:
+                    # Альтернативный способ через /proc/meminfo и lshw
+                    try:
+                        lshw_output = subprocess.check_output(['lshw', '-class', 'memory'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                        match = re.search(r'DDR(\w*)', lshw_output)
+                        if match:
+                            ram_type = f"DDR{match.group(1)}"
+                    except:
+                        # Попробуем через sysfs
+                        try:
+                            for i in range(10):  # Проверяем несколько слотов памяти
+                                try:
+                                    with open(f'/sys/devices/system/memory/memory{i}/phys_index', 'r') as f:
+                                        pass
+                                    # Если файл существует, попробуем получить информацию о типе
+                                    try:
+                                        with open(f'/sys/devices/system/memory/memory{i}/type', 'r') as f:
+                                            mem_type = f.read().strip()
+                                            if 'DDR' in mem_type:
+                                                ram_type = mem_type
+                                                break
+                                    except:
+                                        continue
+                                except:
+                                    break
+                        except:
+                            pass
+            except Exception as e:
+                print(f"[WARNING] RAM type detection error: {e}")
+    except Exception as e:
+        print(f"[ERROR] RAM info failed: {e}")
     return total_ram_gb, ram_type
 
 # Универсальная функция для GPU
-
 def get_gpu_info():
     gpus = []
     system = platform.system()
@@ -136,43 +221,132 @@ def get_gpu_info():
                         "count": 1
                     })
         elif system == "Linux":
+            # Улучшенное определение GPU для Linux
             try:
-                lspci = subprocess.check_output(['lspci']).decode(errors='ignore')
-                for line in lspci.split('\n'):
-                    if 'VGA compatible controller' in line or '3D controller' in line:
-                        model = line.split(':')[-1].strip()
+                # Сначала попробуем lspci для получения базовой информации
+                lspci_output = subprocess.check_output(['lspci', '-nn']).decode(errors='ignore')
+                gpu_devices = []
+                
+                for line in lspci_output.split('\n'):
+                    if 'VGA compatible controller' in line or '3D controller' in line or 'Display controller' in line:
+                        gpu_devices.append(line)
+                
+                for device in gpu_devices:
+                    try:
+                        # Извлекаем модель из lspci
+                        model = device.split(':')[-1].strip()
+                        
+                        # Определяем vendor и получаем дополнительную информацию
+                        vendor = "Unknown"
+                        vram_gb = None
+                        driver_version = None
+                        
+                        if 'AMD' in model or 'ATI' in model:
+                            vendor = "AMD"
+                            # Попробуем получить информацию через rocm-smi или amdgpu
+                            try:
+                                rocm_output = subprocess.check_output(['rocm-smi', '--showproductname'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                if rocm_output.strip():
+                                    model = rocm_output.strip()
+                            except:
+                                pass
+                            
+                            # Попробуем получить VRAM через sysfs
+                            try:
+                                for i in range(10):
+                                    try:
+                                        with open(f'/sys/class/drm/card{i}/device/mem_info_vram_total', 'r') as f:
+                                            vram_bytes = int(f.read().strip())
+                                            vram_gb = vram_bytes // (1024**3)
+                                            break
+                                    except:
+                                        continue
+                            except:
+                                pass
+                                
+                        elif 'NVIDIA' in model:
+                            vendor = "NVIDIA"
+                            # Попробуем nvidia-smi
+                            try:
+                                nvidia_output = subprocess.check_output(['nvidia-smi', '--query-gpu=name,memory.total,driver_version', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                if nvidia_output.strip():
+                                    parts = nvidia_output.strip().split(',')
+                                    if len(parts) >= 3:
+                                        model = parts[0].strip()
+                                        vram_str = parts[1].strip()
+                                        driver_version = parts[2].strip()
+                                        # Парсим VRAM (например, "8192 MiB")
+                                        vram_match = re.search(r'(\d+)', vram_str)
+                                        if vram_match:
+                                            vram_gb = int(vram_match.group(1))
+                            except:
+                                pass
+                                
+                        elif 'Intel' in model:
+                            vendor = "Intel"
+                            # Попробуем получить информацию через intel_gpu_top или sysfs
+                            try:
+                                for i in range(10):
+                                    try:
+                                        with open(f'/sys/class/drm/card{i}/device/mem_info_vram_total', 'r') as f:
+                                            vram_bytes = int(f.read().strip())
+                                            vram_gb = vram_bytes // (1024**3)
+                                            break
+                                    except:
+                                        continue
+                            except:
+                                pass
+                        
                         gpus.append({
                             "model": model,
-                            "vram_gb": None,
-                            "max_cuda_version": None,
+                            "vram_gb": vram_gb,
+                            "max_cuda_version": None,  # Можно добавить определение CUDA версии
                             "tflops": None,
                             "bandwidth_gbps": None,
+                            "vendor": vendor,
+                            "driver_version": driver_version,
                             "count": 1
                         })
-            except Exception:
-                pass
-            # Попробуем nvidia-smi для NVIDIA
-            try:
-                nvidia_smi = subprocess.check_output(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader']).decode(errors='ignore')
-                for line in nvidia_smi.strip().split('\n'):
-                    if line:
-                        model, vram = line.split(',')
-                        gpus.append({
-                            "model": model.strip(),
-                            "vram_gb": int(vram.strip().split()[0]),
-                            "max_cuda_version": None,
-                            "tflops": None,
-                            "bandwidth_gbps": None,
-                            "count": 1
-                        })
-            except Exception:
-                pass
-    except Exception:
-        pass
+                        
+                    except Exception as e:
+                        print(f"[WARNING] GPU device parsing error: {e}")
+                        continue
+                
+                # Если не удалось получить информацию через lspci, попробуем альтернативные методы
+                if not gpus:
+                    try:
+                        # Попробуем через /proc/gpuinfo (если есть)
+                        if os.path.exists('/proc/gpuinfo'):
+                            with open('/proc/gpuinfo', 'r') as f:
+                                gpuinfo = f.read()
+                                # Парсим информацию о GPU
+                                pass
+                    except:
+                        pass
+                        
+            except Exception as e:
+                print(f"[WARNING] GPU detection error: {e}")
+                # Fallback к базовой информации
+                try:
+                    lspci = subprocess.check_output(['lspci']).decode(errors='ignore')
+                    for line in lspci.split('\n'):
+                        if 'VGA compatible controller' in line or '3D controller' in line:
+                            model = line.split(':')[-1].strip()
+                            gpus.append({
+                                "model": model,
+                                "vram_gb": None,
+                                "max_cuda_version": None,
+                                "tflops": None,
+                                "bandwidth_gbps": None,
+                                "count": 1
+                            })
+                except:
+                    pass
+    except Exception as e:
+        print(f"[ERROR] GPU info failed: {e}")
     return gpus
 
 # Универсальная функция для дисков
-
 def get_disk_info():
     disks = []
     system = platform.system()
@@ -215,29 +389,119 @@ def get_disk_info():
                             "write_speed_mb_s": None
                         })
         elif system == "Linux":
+            # Улучшенное определение дисков для Linux
             try:
-                lsblk = subprocess.check_output(['lsblk', '-d', '-o', 'NAME,MODEL,SIZE,TYPE'], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                for line in lsblk.split('\n')[1:]:
+                # Используем lsblk для получения информации о дисках
+                lsblk_output = subprocess.check_output(['lsblk', '-d', '-o', 'NAME,MODEL,SIZE,TYPE,VENDOR'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                
+                for line in lsblk_output.split('\n')[1:]:  # Пропускаем заголовок
                     if line.strip() and 'disk' in line:
                         parts = line.split()
                         if len(parts) >= 4:
-                            name, model, size, dtype = parts[:4]
-                            size_gb = int(float(size.replace('G', '')))
+                            name = parts[0]
+                            model = parts[1] if parts[1] != '-' else "Unknown"
+                            size_str = parts[2]
+                            dtype = parts[3]
+                            
+                            # Парсим размер
+                            size_gb = None
+                            if size_str != '-':
+                                try:
+                                    if 'G' in size_str:
+                                        size_gb = float(size_str.replace('G', ''))
+                                    elif 'T' in size_str:
+                                        size_gb = float(size_str.replace('T', '')) * 1024
+                                    elif 'M' in size_str:
+                                        size_gb = float(size_str.replace('M', '')) / 1024
+                                except:
+                                    pass
+                            
+                            # Определяем тип диска более точно
+                            disk_type = "Unknown"
+                            if dtype == "disk":
+                                # Попробуем определить тип через sysfs
+                                try:
+                                    if os.path.exists(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational'):
+                                        with open(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational', 'r') as f:
+                                            rotational = f.read().strip()
+                                            disk_type = "SSD" if rotational == "0" else "HDD"
+                                except:
+                                    # Альтернативный способ через smartctl
+                                    try:
+                                        smart_output = subprocess.check_output(['smartctl', '-a', name], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                        if 'Solid State Device' in smart_output:
+                                            disk_type = "SSD"
+                                        elif 'Rotation Rate' in smart_output:
+                                            disk_type = "HDD"
+                                    except:
+                                        pass
+                            
+                            # Получаем дополнительную информацию через hdparm или smartctl
+                            read_speed = None
+                            write_speed = None
+                            
+                            try:
+                                # Попробуем получить скорость чтения через hdparm
+                                hdparm_output = subprocess.check_output(['hdparm', '-t', name], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                speed_match = re.search(r'(\d+\.?\d*)\s+MB/sec', hdparm_output)
+                                if speed_match:
+                                    read_speed = float(speed_match.group(1))
+                            except:
+                                pass
+                            
                             disks.append({
                                 "model": model,
-                                "type": dtype,
+                                "type": disk_type,
                                 "size_gb": size_gb,
-                                "read_speed_mb_s": None,
-                                "write_speed_mb_s": None
+                                "read_speed_mb_s": read_speed,
+                                "write_speed_mb_s": write_speed
                             })
-            except Exception:
-                pass
-    except Exception:
-        pass
+                
+                # Если lsblk не сработал, попробуем альтернативные методы
+                if not disks:
+                    try:
+                        # Попробуем через /proc/partitions
+                        with open('/proc/partitions', 'r') as f:
+                            for line in f.readlines()[2:]:  # Пропускаем заголовки
+                                parts = line.split()
+                                if len(parts) >= 4 and parts[3].endswith('sd') or parts[3].endswith('nvme'):
+                                    name = f"/dev/{parts[3]}"
+                                    size_gb = int(parts[2]) // (1024 * 1024)  # Конвертируем из секторов
+                                    disks.append({
+                                        "model": "Unknown",
+                                        "type": "Unknown",
+                                        "size_gb": size_gb,
+                                        "read_speed_mb_s": None,
+                                        "write_speed_mb_s": None
+                                    })
+                    except:
+                        pass
+                        
+            except Exception as e:
+                print(f"[WARNING] Disk detection error: {e}")
+                # Fallback к базовой информации
+                try:
+                    lsblk = subprocess.check_output(['lsblk', '-d', '-o', 'NAME,MODEL,SIZE,TYPE'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                    for line in lsblk.split('\n')[1:]:
+                        if line.strip() and 'disk' in line:
+                            parts = line.split()
+                            if len(parts) >= 4:
+                                name, model, size, dtype = parts[:4]
+                                size_gb = int(float(size.replace('G', '')))
+                                disks.append({
+                                    "model": model,
+                                    "type": dtype,
+                                    "size_gb": size_gb,
+                                    "read_speed_mb_s": None,
+                                    "write_speed_mb_s": None
+                                })
+                except:
+                    pass
+    except Exception as e:
+        print(f"[ERROR] Disk info failed: {e}")
     return disks
 
 # Универсальная функция для сетей
-
 def get_network_info():
     networks = []
     system = platform.system()
@@ -275,20 +539,129 @@ def get_network_info():
             except Exception:
                 pass
         elif system == "Linux":
+            # Улучшенное определение сетевых интерфейсов для Linux
             try:
-                ip_link = subprocess.check_output(['ip', '-o', 'link', 'show']).decode(errors='ignore')
-                for line in ip_link.split('\n'):
-                    if line:
-                        iface = line.split(':')[1].strip()
-                        networks.append({
-                            "up_mbps": None,
-                            "down_mbps": None,
-                            "ports": iface
-                        })
-            except Exception:
-                pass
-    except Exception:
-        pass
+                # Используем ip link для получения списка интерфейсов
+                ip_link_output = subprocess.check_output(['ip', '-o', 'link', 'show'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                
+                for line in ip_link_output.split('\n'):
+                    if line.strip():
+                        try:
+                            # Парсим строку ip link
+                            parts = line.split(':')
+                            if len(parts) >= 2:
+                                iface_name = parts[1].strip()
+                                
+                                # Пропускаем loopback интерфейсы
+                                if iface_name == 'lo':
+                                    continue
+                                
+                                up_mbps = None
+                                down_mbps = None
+                                
+                                # Попробуем получить скорость через ethtool
+                                try:
+                                    ethtool_output = subprocess.check_output(['ethtool', iface_name], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                    speed_match = re.search(r'Speed:\s+(\d+)\s*Mb/s', ethtool_output)
+                                    if speed_match:
+                                        speed_mbps = int(speed_match.group(1))
+                                        up_mbps = speed_mbps
+                                        down_mbps = speed_mbps
+                                except:
+                                    # Альтернативный способ через sysfs
+                                    try:
+                                        if os.path.exists(f'/sys/class/net/{iface_name}/speed'):
+                                            with open(f'/sys/class/net/{iface_name}/speed', 'r') as f:
+                                                speed = f.read().strip()
+                                                if speed != '-1' and speed.isdigit():
+                                                    speed_mbps = int(speed)
+                                                    up_mbps = speed_mbps
+                                                    down_mbps = speed_mbps
+                                    except:
+                                        pass
+                                
+                                # Попробуем определить тип интерфейса
+                                interface_type = "Unknown"
+                                try:
+                                    if os.path.exists(f'/sys/class/net/{iface_name}/type'):
+                                        with open(f'/sys/class/net/{iface_name}/type', 'r') as f:
+                                            net_type = f.read().strip()
+                                            if net_type == '1':
+                                                interface_type = "Ethernet"
+                                            elif net_type == '772':
+                                                interface_type = "Loopback"
+                                            elif net_type == '801':
+                                                interface_type = "Wireless"
+                                except:
+                                    pass
+                                
+                                # Попробуем получить дополнительную информацию через iwconfig для WiFi
+                                if 'wlan' in iface_name or 'wifi' in iface_name:
+                                    try:
+                                        iwconfig_output = subprocess.check_output(['iwconfig', iface_name], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                        if 'IEEE 802.11' in iwconfig_output:
+                                            interface_type = "WiFi"
+                                            # Попробуем определить стандарт WiFi
+                                            if '802.11ac' in iwconfig_output:
+                                                up_mbps = 1300  # Примерная скорость для 802.11ac
+                                                down_mbps = 1300
+                                            elif '802.11n' in iwconfig_output:
+                                                up_mbps = 300   # Примерная скорость для 802.11n
+                                                down_mbps = 300
+                                            elif '802.11g' in iwconfig_output:
+                                                up_mbps = 54    # Примерная скорость для 802.11g
+                                                down_mbps = 54
+                                    except:
+                                        pass
+                                
+                                networks.append({
+                                    "up_mbps": up_mbps,
+                                    "down_mbps": down_mbps,
+                                    "ports": iface_name,
+                                    "type": interface_type
+                                })
+                                
+                        except Exception as e:
+                            print(f"[WARNING] Network interface parsing error: {e}")
+                            continue
+                
+                # Если не удалось получить информацию через ip, попробуем альтернативные методы
+                if not networks:
+                    try:
+                        # Попробуем через /proc/net/dev
+                        with open('/proc/net/dev', 'r') as f:
+                            for line in f.readlines()[2:]:  # Пропускаем заголовки
+                                if line.strip():
+                                    parts = line.split(':')
+                                    if len(parts) >= 2:
+                                        iface_name = parts[0].strip()
+                                        if iface_name != 'lo':  # Пропускаем loopback
+                                            networks.append({
+                                                "up_mbps": None,
+                                                "down_mbps": None,
+                                                "ports": iface_name
+                                            })
+                    except:
+                        pass
+                        
+            except Exception as e:
+                print(f"[WARNING] Network detection error: {e}")
+                # Fallback к базовой информации
+                try:
+                    ip_link = subprocess.check_output(['ip', '-o', 'link', 'show']).decode(errors='ignore')
+                    for line in ip_link.split('\n'):
+                        if line:
+                            iface = line.split(':')[1].strip()
+                            if iface != 'lo':  # Пропускаем loopback
+                                networks.append({
+                                    "up_mbps": None,
+                                    "down_mbps": None,
+                                    "ports": iface
+                                })
+                except:
+                    pass
+    except Exception as e:
+        print(f"[ERROR] Network info failed: {e}")
     return networks
 
 # Универсальные функции для hostname и ip
@@ -397,6 +770,62 @@ def get_network_usage():
     except Exception:
         pass
     return usage
+
+def get_gpu_usage():
+    """Получение использования GPU для Linux систем"""
+    gpu_usage = {}
+    system = platform.system()
+    
+    if system != "Linux":
+        return gpu_usage
+    
+    try:
+        # Попробуем получить информацию через nvidia-smi для NVIDIA
+        try:
+            nvidia_output = subprocess.check_output(['nvidia-smi', '--query-gpu=name,utilization.gpu', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+            for line in nvidia_output.strip().split('\n'):
+                if line:
+                    parts = line.split(',')
+                    if len(parts) >= 2:
+                        gpu_name = parts[0].strip()
+                        usage_str = parts[1].strip()
+                        usage_match = re.search(r'(\d+)', usage_str)
+                        if usage_match:
+                            gpu_usage[gpu_name] = int(usage_match.group(1))
+        except:
+            pass
+        
+        # Попробуем получить информацию через rocm-smi для AMD
+        try:
+            rocm_output = subprocess.check_output(['rocm-smi', '--showuse'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+            for line in rocm_output.split('\n'):
+                if 'GPU' in line and '%' in line:
+                    match = re.search(r'GPU\s+(\d+).*?(\d+)%', line)
+                    if match:
+                        gpu_id = match.group(1)
+                        usage = int(match.group(2))
+                        gpu_usage[f"AMD GPU {gpu_id}"] = usage
+        except:
+            pass
+        
+        # Попробуем получить информацию через sysfs для общих GPU
+        try:
+            for i in range(10):  # Проверяем несколько GPU
+                try:
+                    # Проверяем, существует ли GPU
+                    if os.path.exists(f'/sys/class/drm/card{i}/device/gpu_busy_percent'):
+                        with open(f'/sys/class/drm/card{i}/device/gpu_busy_percent', 'r') as f:
+                            usage = int(f.read().strip())
+                            gpu_usage[f"GPU {i}"] = usage
+                except:
+                    continue
+        except:
+            pass
+            
+    except Exception as e:
+        print(f"[WARNING] GPU usage detection error: {e}")
+    
+    return gpu_usage
 
 # === Docker и SSH ===
 def run_docker_container(task):
@@ -520,7 +949,7 @@ if __name__ == "__main__":
         "status": "online",
         "cpu_usage": psutil.cpu_percent(),
         "memory_usage": psutil.virtual_memory().percent,
-        "gpu_usage": {},  # Можно реализовать сбор usage для GPU отдельно
+        "gpu_usage": get_gpu_usage(),  # Можно реализовать сбор usage для GPU отдельно
         "disk_usage": {part.mountpoint: psutil.disk_usage(part.mountpoint).percent for part in psutil.disk_partitions()},
         "network_usage": get_network_usage(),
     }
