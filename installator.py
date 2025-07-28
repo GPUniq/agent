@@ -254,30 +254,50 @@ def get_gpu_info():
                         if len(parts) >= 2:
                             # Берем часть после первого двоеточия
                             device_info = ':'.join(parts[1:]).strip()
-                            # Ищем описание устройства
-                            if '[' in device_info and ']' in device_info:
-                                # Извлекаем описание между скобками
-                                start = device_info.find('[')
-                                end = device_info.find(']', start)
-                                if start != -1 and end != -1:
-                                    model = device_info[start+1:end].strip()
-                                else:
-                                    # Если не нашли скобки, берем часть до первого [
-                                    if '[' in device_info:
-                                        model = device_info.split('[')[0].strip()
-                                    else:
-                                        model = device_info.strip()
-                            else:
-                                model = device_info.strip()
                             
-                            # Определяем vendor
+                            # Ищем описание устройства - ищем текст между скобками
+                            model = "Unknown"
                             vendor = "Unknown"
-                            if 'NVIDIA' in model or 'nvidia' in model.lower():
-                                vendor = "NVIDIA"
-                            elif 'AMD' in model or 'ATI' in model or 'Radeon' in model:
+                            
+                            # Ищем AMD/ATI GPU
+                            if 'AMD' in device_info or 'ATI' in device_info:
                                 vendor = "AMD"
-                            elif 'Intel' in model:
+                                # Ищем название модели в скобках
+                                amd_match = re.search(r'\[([^\]]+)\]', device_info)
+                                if amd_match:
+                                    model = amd_match.group(1)
+                                    # Если это код, ищем другое описание
+                                    if model.isdigit() or len(model) < 4:
+                                        # Ищем Radeon в строке
+                                        radeon_match = re.search(r'Radeon\s+([^\s\]]+)', device_info)
+                                        if radeon_match:
+                                            model = f"AMD Radeon {radeon_match.group(1)}"
+                                        else:
+                                            # Ищем любое описание в скобках
+                                            desc_match = re.search(r'\[([^\]]+)\]', device_info)
+                                            if desc_match and len(desc_match.group(1)) > 4:
+                                                model = desc_match.group(1)
+                            # Ищем NVIDIA GPU
+                            elif 'NVIDIA' in device_info:
+                                vendor = "NVIDIA"
+                                nvidia_match = re.search(r'\[([^\]]+)\]', device_info)
+                                if nvidia_match:
+                                    model = nvidia_match.group(1)
+                            # Ищем Intel GPU
+                            elif 'Intel' in device_info:
                                 vendor = "Intel"
+                                intel_match = re.search(r'\[([^\]]+)\]', device_info)
+                                if intel_match:
+                                    model = intel_match.group(1)
+                            
+                            # Если модель все еще "Unknown" или слишком короткая, попробуем другой подход
+                            if model == "Unknown" or len(model) < 4:
+                                # Ищем любое описание в скобках, которое не является кодом
+                                all_brackets = re.findall(r'\[([^\]]+)\]', device_info)
+                                for bracket_content in all_brackets:
+                                    if len(bracket_content) > 4 and not bracket_content.isdigit():
+                                        model = bracket_content
+                                        break
                             
                             # Проверяем, не добавили ли мы уже эту GPU
                             already_added = False
@@ -286,7 +306,7 @@ def get_gpu_info():
                                     already_added = True
                                     break
                             
-                            if not already_added and model and len(model) > 3:
+                            if not already_added and model != "Unknown" and len(model) > 3:
                                 gpus.append({
                                     "model": model,
                                     "vram_gb": None,
@@ -347,87 +367,70 @@ def get_disk_info():
                             "write_speed_mb_s": None
                         })
         elif system == "Linux":
-            # Упрощенный подход как в send_mach_info.py
+            # Упрощенный подход для ноутбуков
             try:
-                # Сначала попробуем lsblk с JSON выводом
-                lsblk_output = subprocess.check_output(['lsblk', '-sJap'], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                import json
-                jomsg = json.loads(lsblk_output)
-                blockdevs = jomsg.get("blockdevices", [])
-                
-                for bdev in blockdevs:
-                    if bdev.get("type") == "disk":
-                        name = bdev.get("name", "")
-                        model = bdev.get("model", "Unknown")
-                        size_str = bdev.get("size", "0")
-                        
-                        # Парсим размер
-                        size_gb = None
-                        try:
-                            size_bytes = int(size_str)
-                            size_gb = size_bytes // (1024**3)
-                        except:
-                            pass
-                        
-                        # Определяем тип диска
-                        disk_type = "Unknown"
-                        try:
-                            if os.path.exists(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational'):
-                                with open(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational', 'r') as f:
-                                    rotational = f.read().strip()
-                                    disk_type = "SSD" if rotational == "0" else "HDD"
-                        except:
-                            pass
-                        
-                        disks.append({
-                            "model": model,
-                            "type": disk_type,
-                            "size_gb": size_gb,
-                            "read_speed_mb_s": None,
-                            "write_speed_mb_s": None
-                        })
+                # Сначала попробуем простой lsblk
+                lsblk_output = subprocess.check_output(['lsblk', '-d', '-o', 'NAME,MODEL,SIZE,TYPE'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                for line in lsblk_output.split('\n')[1:]:  # Пропускаем заголовок
+                    if line.strip() and 'disk' in line:
+                        parts = line.split()
+                        if len(parts) >= 4:
+                            name = parts[0]
+                            model = parts[1] if parts[1] != '-' else "Unknown"
+                            size_str = parts[2]
+                            dtype = parts[3]
+                            
+                            # Парсим размер
+                            size_gb = None
+                            if size_str != '-':
+                                try:
+                                    if 'G' in size_str:
+                                        size_gb = float(size_str.replace('G', ''))
+                                    elif 'T' in size_str:
+                                        size_gb = float(size_str.replace('T', '')) * 1024
+                                    elif 'M' in size_str:
+                                        size_gb = float(size_str.replace('M', '')) / 1024
+                                except:
+                                    pass
+                            
+                            # Определяем тип диска
+                            disk_type = "Unknown"
+                            try:
+                                if os.path.exists(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational'):
+                                    with open(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational', 'r') as f:
+                                        rotational = f.read().strip()
+                                        disk_type = "SSD" if rotational == "0" else "HDD"
+                            except:
+                                pass
+                            
+                            disks.append({
+                                "model": model,
+                                "type": disk_type,
+                                "size_gb": size_gb,
+                                "read_speed_mb_s": None,
+                                "write_speed_mb_s": None
+                            })
                         
             except Exception as e:
-                print(f"[WARNING] JSON lsblk failed: {e}")
-                # Fallback к простому lsblk
+                print(f"[WARNING] lsblk failed: {e}")
+                # Fallback через /proc/partitions
                 try:
-                    lsblk_output = subprocess.check_output(['lsblk', '-d', '-o', 'NAME,MODEL,SIZE,TYPE'], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                    for line in lsblk_output.split('\n')[1:]:
-                        if line.strip() and 'disk' in line:
+                    with open('/proc/partitions', 'r') as f:
+                        for line in f.readlines()[2:]:  # Пропускаем заголовки
                             parts = line.split()
-                            if len(parts) >= 4:
-                                name, model, size, dtype = parts[:4]
-                                try:
-                                    size_gb = int(float(size.replace('G', '')))
-                                except:
-                                    size_gb = None
+                            if len(parts) >= 4 and (parts[3].endswith('sd') or parts[3].endswith('nvme') or parts[3].endswith('hd')):
+                                name = f"/dev/{parts[3]}"
+                                size_gb = int(parts[2]) // (1024 * 1024)  # Конвертируем из секторов
                                 disks.append({
-                                    "model": model,
+                                    "model": "Unknown",
                                     "type": "Unknown",
                                     "size_gb": size_gb,
                                     "read_speed_mb_s": None,
                                     "write_speed_mb_s": None
                                 })
                 except Exception as e2:
-                    print(f"[WARNING] Simple lsblk also failed: {e2}")
-                    # Последний fallback - через /proc/partitions
-                    try:
-                        with open('/proc/partitions', 'r') as f:
-                            for line in f.readlines()[2:]:  # Пропускаем заголовки
-                                parts = line.split()
-                                if len(parts) >= 4 and (parts[3].endswith('sd') or parts[3].endswith('nvme') or parts[3].endswith('hd')):
-                                    name = f"/dev/{parts[3]}"
-                                    size_gb = int(parts[2]) // (1024 * 1024)  # Конвертируем из секторов
-                                    disks.append({
-                                        "model": "Unknown",
-                                        "type": "Unknown",
-                                        "size_gb": size_gb,
-                                        "read_speed_mb_s": None,
-                                        "write_speed_mb_s": None
-                                    })
-                    except Exception as e3:
-                        print(f"[WARNING] /proc/partitions also failed: {e3}")
-                        pass
+                    print(f"[WARNING] /proc/partitions also failed: {e2}")
+                    pass
     except Exception as e:
         print(f"[ERROR] Disk info failed: {e}")
     return disks
@@ -489,10 +492,22 @@ def get_network_info():
                                 
                                 # Определяем тип интерфейса
                                 interface_type = "Unknown"
-                                if 'wlan' in iface_name or 'wifi' in iface_name:
+                                if 'wlan' in iface_name or 'wifi' in iface_name or 'wl' in iface_name:
                                     interface_type = "WiFi"
                                 elif 'eth' in iface_name or 'en' in iface_name:
                                     interface_type = "Ethernet"
+                                
+                                # Дополнительная проверка через sysfs
+                                try:
+                                    if os.path.exists(f'/sys/class/net/{iface_name}/type'):
+                                        with open(f'/sys/class/net/{iface_name}/type', 'r') as f:
+                                            net_type = f.read().strip()
+                                            if net_type == '1':
+                                                interface_type = "Ethernet"
+                                            elif net_type == '801':
+                                                interface_type = "WiFi"
+                                except:
+                                    pass
                                 
                                 networks.append({
                                     "up_mbps": None,
@@ -516,10 +531,17 @@ def get_network_info():
                                     if len(parts) >= 2:
                                         iface_name = parts[0].strip()
                                         if iface_name != 'lo':  # Пропускаем loopback
+                                            interface_type = "Unknown"
+                                            if 'wlan' in iface_name or 'wifi' in iface_name or 'wl' in iface_name:
+                                                interface_type = "WiFi"
+                                            elif 'eth' in iface_name or 'en' in iface_name:
+                                                interface_type = "Ethernet"
+                                            
                                             networks.append({
                                                 "up_mbps": None,
                                                 "down_mbps": None,
-                                                "ports": iface_name
+                                                "ports": iface_name,
+                                                "type": interface_type
                                             })
                     except:
                         pass
@@ -533,10 +555,17 @@ def get_network_info():
                         if line:
                             iface = line.split(':')[1].strip()
                             if iface != 'lo':  # Пропускаем loopback
+                                interface_type = "Unknown"
+                                if 'wlan' in iface or 'wifi' in iface or 'wl' in iface:
+                                    interface_type = "WiFi"
+                                elif 'eth' in iface or 'en' in iface:
+                                    interface_type = "Ethernet"
+                                
                                 networks.append({
                                     "up_mbps": None,
                                     "down_mbps": None,
-                                    "ports": iface
+                                    "ports": iface,
+                                    "type": interface_type
                                 })
                 except:
                     pass
@@ -626,14 +655,51 @@ def get_network_usage():
                     # Конвертируем в мегабиты в секунду
                     delta_mbps = (delta_bytes * 8) / (1024 * 1024)
                     
-                    # Предполагаем типичную скорость интерфейса (100 Mbps для Ethernet, 54 Mbps для WiFi)
-                    # и вычисляем процент использования
-                    if 'wlan' in iface or 'wifi' in iface:
-                        max_speed = 54  # Mbps для WiFi
-                    else:
-                        max_speed = 100  # Mbps для Ethernet
+                    # Получаем реальную скорость интерфейса
+                    max_speed = None
+                    try:
+                        # Попробуем получить скорость через sysfs
+                        if os.path.exists(f'/sys/class/net/{iface}/speed'):
+                            with open(f'/sys/class/net/{iface}/speed', 'r') as f:
+                                speed = f.read().strip()
+                                if speed != '-1' and speed.isdigit():
+                                    max_speed = int(speed)
+                    except:
+                        pass
                     
-                    if max_speed > 0:
+                    # Если не удалось получить скорость, попробуем ethtool
+                    if max_speed is None:
+                        try:
+                            ethtool_output = subprocess.check_output(['ethtool', iface], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                            speed_match = re.search(r'Speed:\s+(\d+)\s*Mb/s', ethtool_output)
+                            if speed_match:
+                                max_speed = int(speed_match.group(1))
+                        except:
+                            pass
+                    
+                    # Если все еще не удалось получить скорость, используем разумные предположения
+                    if max_speed is None:
+                        # Определяем тип интерфейса по имени
+                        if 'wlan' in iface or 'wifi' in iface or 'wl' in iface:
+                            # Для WiFi используем типичную скорость в зависимости от стандарта
+                            try:
+                                iwconfig_output = subprocess.check_output(['iwconfig', iface], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                if '802.11ax' in iwconfig_output or 'Wi-Fi 6' in iwconfig_output:
+                                    max_speed = 1200  # Mbps для WiFi 6
+                                elif '802.11ac' in iwconfig_output or 'Wi-Fi 5' in iwconfig_output:
+                                    max_speed = 866   # Mbps для WiFi 5
+                                elif '802.11n' in iwconfig_output:
+                                    max_speed = 300   # Mbps для WiFi 4
+                                else:
+                                    max_speed = 54    # Mbps для старых стандартов
+                            except:
+                                max_speed = 300  # Предполагаем WiFi 4
+                        else:
+                            # Для Ethernet используем типичную скорость
+                            max_speed = 1000  # 1 Gbps
+                    
+                    # Вычисляем процент использования
+                    if max_speed and max_speed > 0:
                         percent = min(100.0, (delta_mbps / max_speed) * 100)
                     else:
                         percent = 0.0
@@ -759,7 +825,7 @@ def poll_for_tasks(agent_id, secret_key):
                     container_id = run_docker_container(task)
                     if container_id:
                         print(f"[INFO] Docker container started: {container_id}")
-                        print(f"[INFO] SSH connect: ssh user@95.165.77.84 -p 21234")
+                        print(f"[INFO] Container is ready for tasks")
                         # Можно отправить статус задачи обратно на сервер
                         send_task_status(agent_id, task.get('id'), secret_key, container_id)
                 else:
@@ -780,7 +846,7 @@ def send_task_status(agent_id, task_id, secret_key, container_id):
     data = {
         "status": "running",
         "container_id": container_id,
-        "output": f"ssh user@95.165.77.84 -p 21234"
+        "output": f"Container {container_id} started successfully"
     }
     try:
         response = requests.post(url, headers=headers, json=data, timeout=10)
@@ -813,9 +879,15 @@ def confirm_agent(secret_key, data):
 if __name__ == "__main__":
     import json
     if len(sys.argv) < 2:
-        print("Usage: python installator.py <secret_key>")
+        print("Usage: python installator.py <secret_key> [location] [price_per_hour] [max_duration_hours]")
         sys.exit(1)
     secret_key = sys.argv[1]
+    
+    # Получаем настраиваемые параметры из аргументов командной строки или переменных окружения
+    location = sys.argv[2] if len(sys.argv) > 2 else os.environ.get('AGENT_LOCATION', 'Unknown')
+    price_per_hour = float(sys.argv[3]) if len(sys.argv) > 3 else float(os.environ.get('AGENT_PRICE_PER_HOUR', '1.5'))
+    max_duration_hours = int(sys.argv[4]) if len(sys.argv) > 4 else int(os.environ.get('AGENT_MAX_DURATION_HOURS', '12'))
+    
     # Проверяем, есть ли сохранённый agent_id
     agent_id = None
     if os.path.exists(AGENT_ID_FILE):
@@ -825,13 +897,13 @@ if __name__ == "__main__":
     system_info = get_system_info()
     data = {
         **system_info,
-        "location": "Moscow, Russia",
-        "price_per_hour": 1.5,
-        "max_duration_hours": 12,
+        "location": location,
+        "price_per_hour": price_per_hour,
+        "max_duration_hours": max_duration_hours,
         "status": "online",
         "cpu_usage": psutil.cpu_percent(),
         "memory_usage": psutil.virtual_memory().percent,
-        "gpu_usage": get_gpu_usage(),  # Можно реализовать сбор usage для GPU отдельно
+        "gpu_usage": get_gpu_usage(),
         "disk_usage": {part.mountpoint: psutil.disk_usage(part.mountpoint).percent for part in psutil.disk_partitions()},
         "network_usage": get_network_usage(),
     }
