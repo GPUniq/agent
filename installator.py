@@ -43,8 +43,8 @@ def get_cpu_info():
         elif system == "Linux":
             # Улучшенное получение информации о CPU для Linux
             try:
-                with open('/proc/cpuinfo') as f:
-                    lines = f.read()
+            with open('/proc/cpuinfo') as f:
+                lines = f.read()
                     
                     # Ищем модель процессора
                     model_match = re.search(r'model name\s+:\s+(.+)', lines)
@@ -97,16 +97,16 @@ def get_cpu_info():
                 })
         else:
             model = platform.processor()
-            cores = psutil.cpu_count(logical=False)
-            threads = psutil.cpu_count(logical=True)
-            freq = psutil.cpu_freq().max / 1000 if psutil.cpu_freq() else None
-            cpu_info.append({
-                "model": model,
-                "cores": cores,
-                "threads": threads,
-                "freq_ghz": round(freq, 2) if freq else None,
-                "count": 1
-            })
+        cores = psutil.cpu_count(logical=False)
+        threads = psutil.cpu_count(logical=True)
+        freq = psutil.cpu_freq().max / 1000 if psutil.cpu_freq() else None
+        cpu_info.append({
+            "model": model,
+            "cores": cores,
+            "threads": threads,
+            "freq_ghz": round(freq, 2) if freq else None,
+            "count": 1
+        })
     except Exception as e:
         print(f"[ERROR] CPU info failed: {e}")
         # Минимальная информация в случае ошибки
@@ -145,8 +145,8 @@ def get_ram_info():
                 try:
                     ram_type_out = subprocess.check_output(['sudo', 'dmidecode', '-t', 'memory'], stderr=subprocess.DEVNULL).decode(errors='ignore')
                     match = re.search(r'Type:\s+(DDR\w*)', ram_type_out)
-                    if match:
-                        ram_type = match.group(1)
+                if match:
+                    ram_type = match.group(1)
                 except:
                     # Альтернативный способ через /proc/meminfo и lshw
                     try:
@@ -395,15 +395,15 @@ def get_gpu_info():
                                     break
                             
                             if not already_added and model != "Unknown" and len(model) > 3:
-                                gpus.append({
+                        gpus.append({
                                             "model": model,
                                             "vram_gb": vram_gb,
                                             "max_cuda_version": cuda_version,
                                             "tflops": tflops,
                                             "bandwidth_gbps": bandwidth_gbps,
                                             "vendor": vendor,
-                                    "count": 1
-                                })
+                            "count": 1
+                        })
             except Exception as e:
                 print(f"[WARNING] lspci parsing error: {e}")
                 pass
@@ -771,11 +771,11 @@ def get_network_info():
             except Exception as e:
                 print(f"[WARNING] Network detection error: {e}")
                 # Fallback к базовой информации
-                try:
-                    ip_link = subprocess.check_output(['ip', '-o', 'link', 'show']).decode(errors='ignore')
-                    for line in ip_link.split('\n'):
-                        if line:
-                            iface = line.split(':')[1].strip()
+            try:
+                ip_link = subprocess.check_output(['ip', '-o', 'link', 'show']).decode(errors='ignore')
+                for line in ip_link.split('\n'):
+                    if line:
+                        iface = line.split(':')[1].strip()
                             if iface != 'lo':  # Пропускаем loopback
                                 interface_type = "Unknown"
                                 if 'wlan' in iface or 'wifi' in iface or 'wl' in iface or iface.startswith('wl'):
@@ -783,14 +783,14 @@ def get_network_info():
                                 elif 'eth' in iface or 'en' in iface:
                                     interface_type = "Ethernet"
                                 
-                                networks.append({
-                                    "up_mbps": None,
-                                    "down_mbps": None,
+                        networks.append({
+                            "up_mbps": None,
+                            "down_mbps": None,
                                     "ports": iface,
                                     "type": interface_type
-                                })
+                        })
                 except:
-                    pass
+                pass
     except Exception as e:
         print(f"[ERROR] Network info failed: {e}")
     return networks
@@ -1101,14 +1101,12 @@ def confirm_agent(secret_key, data):
 if __name__ == "__main__":
     import json
     if len(sys.argv) < 2:
-        print("Usage: python installator.py <secret_key> [location] [price_per_hour] [max_duration_hours]")
+        print("Usage: python installator.py <secret_key> [location]")
         sys.exit(1)
     secret_key = sys.argv[1]
     
     # Получаем настраиваемые параметры из аргументов командной строки или переменных окружения
     location = sys.argv[2] if len(sys.argv) > 2 else os.environ.get('AGENT_LOCATION', 'Unknown')
-    price_per_hour = float(sys.argv[3]) if len(sys.argv) > 3 else float(os.environ.get('AGENT_PRICE_PER_HOUR', '1.5'))
-    max_duration_hours = int(sys.argv[4]) if len(sys.argv) > 4 else int(os.environ.get('AGENT_MAX_DURATION_HOURS', '12'))
     
     # Проверяем, есть ли сохранённый agent_id
     agent_id = None
@@ -1120,8 +1118,6 @@ if __name__ == "__main__":
     data = {
         **system_info,
         "location": location,
-        "price_per_hour": price_per_hour,
-        "max_duration_hours": max_duration_hours,
         "status": "online",
         "cpu_usage": psutil.cpu_percent(),
         "memory_usage": psutil.virtual_memory().percent,
