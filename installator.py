@@ -231,10 +231,32 @@ def get_gpu_info():
                         match = re.search(r'GPU \d+: (.+?) \(UUID:', line)
                         if match:
                             model = match.group(1).strip()
+                            
+                            # Получаем дополнительную информацию через nvidia-smi
+                            vram_gb = None
+                            cuda_version = None
+                            try:
+                                nvidia_detailed = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.total,driver_version', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                if nvidia_detailed.strip():
+                                    parts = nvidia_detailed.strip().split(',')
+                                    if len(parts) >= 2:
+                                        vram_str = parts[0].strip()
+                                        driver_version = parts[1].strip()
+                                        # Парсим VRAM (например, "8192 MiB")
+                                        vram_match = re.search(r'(\d+)', vram_str)
+                                        if vram_match:
+                                            vram_gb = int(vram_match.group(1))
+                                        # Парсим CUDA версию из driver version
+                                        cuda_match = re.search(r'CUDA Version: (\d+\.\d+)', driver_version)
+                                        if cuda_match:
+                                            cuda_version = cuda_match.group(1)
+                            except:
+                                pass
+                            
                             gpus.append({
                                 "model": model,
-                                "vram_gb": None,  # Можно добавить отдельно
-                                "max_cuda_version": None,
+                                "vram_gb": vram_gb,
+                                "max_cuda_version": cuda_version,
                                 "tflops": None,
                                 "bandwidth_gbps": None,
                                 "vendor": "NVIDIA",
@@ -299,6 +321,72 @@ def get_gpu_info():
                                         model = bracket_content
                                         break
                             
+                            # Получаем дополнительную информацию для AMD GPU
+                            vram_gb = None
+                            cuda_version = None
+                            bandwidth_gbps = None
+                            tflops = None
+                            
+                            if vendor == "AMD":
+                                try:
+                                    # Попробуем получить информацию через rocm-smi
+                                    rocm_output = subprocess.check_output(['rocm-smi', '--showproductname'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                    if rocm_output.strip():
+                                        model = rocm_output.strip()
+                                except:
+                                    pass
+                                
+                                # Попробуем получить VRAM через sysfs
+                                try:
+                                    for i in range(10):
+                                        try:
+                                            with open(f'/sys/class/drm/card{i}/device/mem_info_vram_total', 'r') as f:
+                                                vram_bytes = int(f.read().strip())
+                                                vram_gb = vram_bytes // (1024**3)
+                                                break
+                                        except:
+                                            continue
+                                except:
+                                    pass
+                                
+                                # Если не удалось получить через sysfs, попробуем другие методы
+                                if vram_gb is None:
+                                    try:
+                                        # Попробуем через /proc/meminfo для интегрированной графики
+                                        with open('/proc/meminfo', 'r') as f:
+                                            meminfo = f.read()
+                                            # Ищем информацию о видеопамяти
+                                            vram_match = re.search(r'VramTotal:\s+(\d+)', meminfo)
+                                            if vram_match:
+                                                vram_kb = int(vram_match.group(1))
+                                                vram_gb = vram_kb // (1024 * 1024)
+                                    except:
+                                        pass
+                                
+                                # Если все еще нет информации, попробуем через lshw
+                                if vram_gb is None:
+                                    try:
+                                        lshw_output = subprocess.check_output(['lshw', '-class', 'display'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                        vram_match = re.search(r'size:\s+(\d+)\s*([GM])iB', lshw_output)
+                                        if vram_match:
+                                            size = int(vram_match.group(1))
+                                            unit = vram_match.group(2)
+                                            if unit == 'G':
+                                                vram_gb = size
+                                            elif unit == 'M':
+                                                vram_gb = size // 1024
+                                    except:
+                                        pass
+                                
+                                # Оцениваем пропускную способность памяти для AMD Radeon 680M
+                                if '680M' in model:
+                                    bandwidth_gbps = 448  # LPDDR5-6400
+                                    # Оценка производительности в TFLOPS (примерная)
+                                    tflops = 3.38  # Для Radeon 680M
+                                
+                                # Для AMD GPU CUDA не поддерживается, но есть ROCm
+                                cuda_version = "ROCm supported"
+                            
                             # Проверяем, не добавили ли мы уже эту GPU
                             already_added = False
                             for gpu in gpus:
@@ -309,10 +397,10 @@ def get_gpu_info():
                             if not already_added and model != "Unknown" and len(model) > 3:
                                 gpus.append({
                                     "model": model,
-                                    "vram_gb": None,
-                                    "max_cuda_version": None,
-                                    "tflops": None,
-                                    "bandwidth_gbps": None,
+                                    "vram_gb": vram_gb,
+                                    "max_cuda_version": cuda_version,
+                                    "tflops": tflops,
+                                    "bandwidth_gbps": bandwidth_gbps,
                                     "vendor": vendor,
                                     "count": 1
                                 })
@@ -390,6 +478,10 @@ def get_disk_info():
                                         size_gb = float(size_str.replace('T', '')) * 1024
                                     elif 'M' in size_str:
                                         size_gb = float(size_str.replace('M', '')) / 1024
+                                    elif size_str.isdigit():
+                                        # Если это просто число, предполагаем что это байты
+                                        size_bytes = int(size_str)
+                                        size_gb = size_bytes // (1024**3)
                                 except:
                                     pass
                             
@@ -492,7 +584,7 @@ def get_network_info():
                                 
                                 # Определяем тип интерфейса
                                 interface_type = "Unknown"
-                                if 'wlan' in iface_name or 'wifi' in iface_name or 'wl' in iface_name:
+                                if 'wlan' in iface_name or 'wifi' in iface_name or 'wl' in iface_name or iface_name.startswith('wl'):
                                     interface_type = "WiFi"
                                 elif 'eth' in iface_name or 'en' in iface_name:
                                     interface_type = "Ethernet"
@@ -532,7 +624,7 @@ def get_network_info():
                                         iface_name = parts[0].strip()
                                         if iface_name != 'lo':  # Пропускаем loopback
                                             interface_type = "Unknown"
-                                            if 'wlan' in iface_name or 'wifi' in iface_name or 'wl' in iface_name:
+                                            if 'wlan' in iface_name or 'wifi' in iface_name or 'wl' in iface_name or iface_name.startswith('wl'):
                                                 interface_type = "WiFi"
                                             elif 'eth' in iface_name or 'en' in iface_name:
                                                 interface_type = "Ethernet"
@@ -556,7 +648,7 @@ def get_network_info():
                             iface = line.split(':')[1].strip()
                             if iface != 'lo':  # Пропускаем loopback
                                 interface_type = "Unknown"
-                                if 'wlan' in iface or 'wifi' in iface or 'wl' in iface:
+                                if 'wlan' in iface or 'wifi' in iface or 'wl' in iface or iface.startswith('wl'):
                                     interface_type = "WiFi"
                                 elif 'eth' in iface or 'en' in iface:
                                     interface_type = "Ethernet"
@@ -639,8 +731,8 @@ def get_network_usage():
             for iface, stats in counters.items():
                 counters_before[iface] = stats.bytes_sent + stats.bytes_recv
             
-            # Ждем 1 секунду
-            time.sleep(1)
+            # Ждем 0.5 секунды вместо 1 секунды для более быстрого отклика
+            time.sleep(0.5)
             
             # Получаем новые значения
             counters_after = psutil.net_io_counters(pernic=True)
@@ -652,8 +744,8 @@ def get_network_usage():
                     after = counters_after[iface].bytes_sent + counters_after[iface].bytes_recv
                     delta_bytes = after - before
                     
-                    # Конвертируем в мегабиты в секунду
-                    delta_mbps = (delta_bytes * 8) / (1024 * 1024)
+                    # Конвертируем в мегабиты в секунду (умножаем на 2 так как измеряли за 0.5 сек)
+                    delta_mbps = (delta_bytes * 8 * 2) / (1024 * 1024)
                     
                     # Получаем реальную скорость интерфейса
                     max_speed = None
@@ -680,7 +772,7 @@ def get_network_usage():
                     # Если все еще не удалось получить скорость, используем разумные предположения
                     if max_speed is None:
                         # Определяем тип интерфейса по имени
-                        if 'wlan' in iface or 'wifi' in iface or 'wl' in iface:
+                        if 'wlan' in iface or 'wifi' in iface or 'wl' in iface or iface.startswith('wl'):
                             # Для WiFi используем типичную скорость в зависимости от стандарта
                             try:
                                 iwconfig_output = subprocess.check_output(['iwconfig', iface], stderr=subprocess.DEVNULL).decode(errors='ignore')
