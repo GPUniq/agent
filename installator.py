@@ -468,20 +468,76 @@ def get_disk_info():
                             size_str = parts[2]
                             dtype = parts[3]
                             
-                            # Парсим размер
+                            # Улучшенный парсинг размера
                             size_gb = None
                             if size_str != '-':
                                 try:
+                                    # Убираем все пробелы
+                                    size_str = size_str.strip()
+                                    
                                     if 'G' in size_str:
+                                        # Пример: "512G", "512.5G"
                                         size_gb = float(size_str.replace('G', ''))
                                     elif 'T' in size_str:
+                                        # Пример: "1T", "2.5T"
                                         size_gb = float(size_str.replace('T', '')) * 1024
                                     elif 'M' in size_str:
+                                        # Пример: "512M"
                                         size_gb = float(size_str.replace('M', '')) / 1024
                                     elif size_str.isdigit():
                                         # Если это просто число, предполагаем что это байты
                                         size_bytes = int(size_str)
                                         size_gb = size_bytes // (1024**3)
+                                    else:
+                                        # Попробуем извлечь число из строки
+                                        number_match = re.search(r'(\d+(?:\.\d+)?)', size_str)
+                                        if number_match:
+                                            number = float(number_match.group(1))
+                                            if 'T' in size_str:
+                                                size_gb = number * 1024
+                                            elif 'M' in size_str:
+                                                size_gb = number / 1024
+                                            else:
+                                                size_gb = number
+                                except Exception as e:
+                                    print(f"[WARNING] Failed to parse disk size '{size_str}': {e}")
+                                    pass
+                            
+                            # Если не удалось получить размер через lsblk, попробуем другие методы
+                            if size_gb is None:
+                                try:
+                                    # Попробуем через fdisk
+                                    fdisk_output = subprocess.check_output(['fdisk', '-l', name], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                    size_match = re.search(r'Disk\s+\S+:\s+(\d+(?:\.\d+)?)\s*([GM])iB', fdisk_output)
+                                    if size_match:
+                                        size = float(size_match.group(1))
+                                        unit = size_match.group(2)
+                                        if unit == 'G':
+                                            size_gb = size
+                                        elif unit == 'M':
+                                            size_gb = size / 1024
+                                except:
+                                    pass
+                            
+                            # Если все еще нет размера, попробуем через /proc/partitions
+                            if size_gb is None:
+                                try:
+                                    with open('/proc/partitions', 'r') as f:
+                                        for part_line in f.readlines()[2:]:
+                                            part_parts = part_line.split()
+                                            if len(part_parts) >= 4 and part_parts[3] == name.replace('/dev/', ''):
+                                                sectors = int(part_parts[2])
+                                                size_gb = sectors // (1024 * 1024)  # 512 байт на сектор
+                                                break
+                                except:
+                                    pass
+                            
+                            # Последний fallback - через blockdev
+                            if size_gb is None:
+                                try:
+                                    blockdev_output = subprocess.check_output(['blockdev', '--getsize64', name], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                    size_bytes = int(blockdev_output.strip())
+                                    size_gb = size_bytes // (1024**3)
                                 except:
                                     pass
                             
