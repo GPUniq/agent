@@ -221,7 +221,7 @@ def get_gpu_info():
                         "count": 1
                     })
         elif system == "Linux":
-            # Упрощенный подход как в v-installator.py
+            # Улучшенное определение GPU для Linux
             try:
                 # Сначала попробуем nvidia-smi для NVIDIA GPU
                 nvidia_output = subprocess.check_output(['nvidia-smi', '-L'], stderr=subprocess.DEVNULL).decode(errors='ignore')
@@ -243,21 +243,28 @@ def get_gpu_info():
             except:
                 pass
             
-            # Если nvidia-smi не сработал, попробуем lspci
-            if not gpus:
-                try:
-                    lspci_output = subprocess.check_output(['lspci', '-nn']).decode(errors='ignore')
-                    for line in lspci_output.split('\n'):
-                        if 'VGA compatible controller' in line or '3D controller' in line:
-                            model = line.split(':')[-1].strip()
-                            vendor = "Unknown"
-                            if 'NVIDIA' in model:
-                                vendor = "NVIDIA"
-                            elif 'AMD' in model or 'ATI' in model:
-                                vendor = "AMD"
-                            elif 'Intel' in model:
-                                vendor = "Intel"
-                            
+            # Попробуем lspci для всех GPU
+            try:
+                lspci_output = subprocess.check_output(['lspci', '-nn']).decode(errors='ignore')
+                for line in lspci_output.split('\n'):
+                    if 'VGA compatible controller' in line or '3D controller' in line or 'Display controller' in line:
+                        model = line.split(':')[-1].strip()
+                        vendor = "Unknown"
+                        if 'NVIDIA' in model:
+                            vendor = "NVIDIA"
+                        elif 'AMD' in model or 'ATI' in model:
+                            vendor = "AMD"
+                        elif 'Intel' in model:
+                            vendor = "Intel"
+                        
+                        # Проверяем, не добавили ли мы уже эту GPU
+                        already_added = False
+                        for gpu in gpus:
+                            if vendor in gpu["model"] and vendor != "Unknown":
+                                already_added = True
+                                break
+                        
+                        if not already_added:
                             gpus.append({
                                 "model": model,
                                 "vram_gb": None,
@@ -267,8 +274,8 @@ def get_gpu_info():
                                 "vendor": vendor,
                                 "count": 1
                             })
-                except:
-                    pass
+            except:
+                pass
                         
     except Exception as e:
         print(f"[ERROR] GPU info failed: {e}")
@@ -422,7 +429,7 @@ def get_network_info():
             except Exception:
                 pass
         elif system == "Linux":
-            # Упрощенный подход - только базовое определение интерфейсов
+            # Улучшенное определение сетевых интерфейсов для Linux
             try:
                 # Используем ip link для получения списка интерфейсов
                 ip_link_output = subprocess.check_output(['ip', '-o', 'link', 'show'], stderr=subprocess.DEVNULL).decode(errors='ignore')
@@ -552,55 +559,46 @@ def get_network_usage():
     usage = {}
     system = platform.system()
     try:
+        # Получаем статистику сети
         counters = psutil.net_io_counters(pernic=True)
-        speeds = {}
-        # Получаем скорости интерфейсов (в битах/сек)
-        if system == "Darwin":
-            # macOS: используем networksetup и ifconfig
-            try:
-                sp = subprocess.check_output(['networksetup', '-listallhardwareports']).decode()
-                for match in re.finditer(r'Hardware Port: (.+?)\nDevice: (.+?)\n', sp):
-                    port, device = match.groups()
-                    try:
-                        info = subprocess.check_output(['ifconfig', device]).decode()
-                        up = re.search(r'media:.*\((\d+)baseT', info)
-                        if up:
-                            speeds[device] = int(up.group(1)) * 1_000_000  # в битах/сек
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-        elif system == "Windows":
-            try:
-                out = subprocess.check_output(['wmic', 'nic', 'get', 'Name,Speed'], shell=True).decode(errors='ignore')
-                for line in out.split('\n')[1:]:
-                    if line.strip():
-                        parts = line.split()
-                        name = ' '.join(parts[:-1]) if len(parts) > 1 else parts[0]
-                        speed = int(parts[-1]) if parts[-1].isdigit() else None
-                        if speed:
-                            speeds[name] = speed  # в битах/сек
-            except Exception:
-                pass
-        # Для Linux можно использовать ethtool, но это требует root
-        # Считаем usage как изменение байт за 1 секунду относительно скорости
-        import time
-        counters_before = {iface: (stats.bytes_sent + stats.bytes_recv) for iface, stats in counters.items()}
-        time.sleep(1)
-        counters_after = psutil.net_io_counters(pernic=True)
-        for iface in counters:
-            before = counters_before.get(iface, 0)
-            after = counters_after[iface].bytes_sent + counters_after[iface].bytes_recv
-            delta_bytes = after - before
-            delta_bits = delta_bytes * 8
-            speed = speeds.get(iface)
-            if speed and speed > 0:
-                percent = min(100.0, (delta_bits / speed) * 100)
-                usage[iface] = round(percent, 2)
-            else:
-                usage[iface] = 0.0  # всегда число, если не удалось определить usage
-    except Exception:
-        pass
+        
+        # Для Linux используем простой подход - измеряем изменение байт за секунду
+        if system == "Linux":
+            # Запоминаем начальные значения
+            counters_before = {}
+            for iface, stats in counters.items():
+                counters_before[iface] = stats.bytes_sent + stats.bytes_recv
+            
+            # Ждем 1 секунду
+            time.sleep(1)
+            
+            # Получаем новые значения
+            counters_after = psutil.net_io_counters(pernic=True)
+            
+            # Вычисляем использование для каждого интерфейса
+            for iface in counters:
+                if iface in counters_before and iface in counters_after:
+                    before = counters_before[iface]
+                    after = counters_after[iface].bytes_sent + counters_after[iface].bytes_recv
+                    delta_bytes = after - before
+                    
+                    # Конвертируем в мегабиты в секунду
+                    delta_mbps = (delta_bytes * 8) / (1024 * 1024)
+                    
+                    # Ограничиваем до 100%
+                    usage[iface] = min(100.0, max(0.0, delta_mbps))
+                else:
+                    usage[iface] = 0.0
+        else:
+            # Для других систем используем базовый подход
+            for iface in counters:
+                usage[iface] = 0.0
+                
+    except Exception as e:
+        print(f"[WARNING] Network usage calculation error: {e}")
+        # Возвращаем пустой словарь в случае ошибки
+        usage = {}
+    
     return usage
 
 def get_gpu_usage():
