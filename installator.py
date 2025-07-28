@@ -45,46 +45,46 @@ def get_cpu_info():
             try:
                 with open('/proc/cpuinfo') as f:
                     lines = f.read()
-                
-                # Ищем модель процессора
-                model_match = re.search(r'model name\s+:\s+(.+)', lines)
-                if model_match:
-                    model = model_match.group(1).strip()
-                else:
-                    # Альтернативный способ через lscpu
+                    
+                    # Ищем модель процессора
+                    model_match = re.search(r'model name\s+:\s+(.+)', lines)
+                    if model_match:
+                        model = model_match.group(1).strip()
+                    else:
+                        # Альтернативный способ через lscpu
+                        try:
+                            lscpu_output = subprocess.check_output(['lscpu']).decode()
+                            model_match = re.search(r'Model name:\s+(.+)', lscpu_output)
+                            model = model_match.group(1).strip() if model_match else platform.processor()
+                        except:
+                            model = platform.processor()
+                    
+                    # Получаем количество ядер и потоков
+                    cores = psutil.cpu_count(logical=False)
+                    threads = psutil.cpu_count(logical=True)
+                    
+                    # Получаем частоту через lscpu
+                    freq = None
                     try:
                         lscpu_output = subprocess.check_output(['lscpu']).decode()
-                        model_match = re.search(r'Model name:\s+(.+)', lscpu_output)
-                        model = model_match.group(1).strip() if model_match else platform.processor()
+                        freq_match = re.search(r'CPU max MHz:\s+(\d+)', lscpu_output)
+                        if freq_match:
+                            freq = float(freq_match.group(1)) / 1000  # Конвертируем в GHz
+                        else:
+                            # Альтернативный способ через psutil
+                            cpu_freq = psutil.cpu_freq()
+                            freq = cpu_freq.max / 1000 if cpu_freq else None
                     except:
-                        model = platform.processor()
-                
-                # Получаем количество ядер и потоков
-                cores = psutil.cpu_count(logical=False)
-                threads = psutil.cpu_count(logical=True)
-                
-                # Получаем частоту через lscpu
-                freq = None
-                try:
-                    lscpu_output = subprocess.check_output(['lscpu']).decode()
-                    freq_match = re.search(r'CPU max MHz:\s+(\d+)', lscpu_output)
-                    if freq_match:
-                        freq = float(freq_match.group(1)) / 1000  # Конвертируем в GHz
-                    else:
-                        # Альтернативный способ через psutil
                         cpu_freq = psutil.cpu_freq()
                         freq = cpu_freq.max / 1000 if cpu_freq else None
-                except:
-                    cpu_freq = psutil.cpu_freq()
-                    freq = cpu_freq.max / 1000 if cpu_freq else None
-                
-                cpu_info.append({
-                    "model": model,
-                    "cores": cores,
-                    "threads": threads,
-                    "freq_ghz": round(freq, 2) if freq else None,
-                    "count": 1
-                })
+                    
+                    cpu_info.append({
+                        "model": model,
+                        "cores": cores,
+                        "threads": threads,
+                        "freq_ghz": round(freq, 2) if freq else None,
+                        "count": 1
+                    })
             except Exception as e:
                 print(f"[WARNING] CPU info error: {e}")
                 # Fallback к базовой информации
@@ -253,15 +253,15 @@ def get_gpu_info():
                             except:
                                 pass
                             
-                            gpus.append({
-                                "model": model,
+                        gpus.append({
+                            "model": model,
                                 "vram_gb": vram_gb,
                                 "max_cuda_version": cuda_version,
-                                "tflops": None,
-                                "bandwidth_gbps": None,
+                            "tflops": None,
+                            "bandwidth_gbps": None,
                                 "vendor": "NVIDIA",
-                                "count": 1
-                            })
+                            "count": 1
+                        })
             except:
                 pass
             
@@ -396,12 +396,12 @@ def get_gpu_info():
                             
                             if not already_added and model != "Unknown" and len(model) > 3:
                                 gpus.append({
-                                    "model": model,
-                                    "vram_gb": vram_gb,
-                                    "max_cuda_version": cuda_version,
-                                    "tflops": tflops,
-                                    "bandwidth_gbps": bandwidth_gbps,
-                                    "vendor": vendor,
+                                            "model": model,
+                                            "vram_gb": vram_gb,
+                                            "max_cuda_version": cuda_version,
+                                            "tflops": tflops,
+                                            "bandwidth_gbps": bandwidth_gbps,
+                                            "vendor": vendor,
                                     "count": 1
                                 })
             except Exception as e:
@@ -638,6 +638,67 @@ def get_network_info():
                                 if iface_name == 'lo':
                                     continue
                                 
+                                # Получаем реальную скорость интерфейса
+                                up_mbps = None
+                                down_mbps = None
+                                
+                                # Метод 1: Через sysfs
+                                try:
+                                    if os.path.exists(f'/sys/class/net/{iface_name}/speed'):
+                                        with open(f'/sys/class/net/{iface_name}/speed', 'r') as f:
+                                            speed = f.read().strip()
+                                            if speed != '-1' and speed.isdigit():
+                                                up_mbps = int(speed)
+                                                down_mbps = int(speed)
+                                except:
+                                    pass
+                                
+                                # Метод 2: Через ethtool
+                                if up_mbps is None:
+                                    try:
+                                        ethtool_output = subprocess.check_output(['ethtool', iface_name], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                        speed_match = re.search(r'Speed:\s+(\d+)\s*Mb/s', ethtool_output)
+                                        if speed_match:
+                                            up_mbps = int(speed_match.group(1))
+                                            down_mbps = int(speed_match.group(1))
+                                    except:
+                                        pass
+                                
+                                # Метод 3: Для WiFi интерфейсов через iwconfig
+                                if up_mbps is None and ('wlan' in iface_name or 'wifi' in iface_name or 'wl' in iface_name or iface_name.startswith('wl')):
+                                    try:
+                                        iwconfig_output = subprocess.check_output(['iwconfig', iface_name], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                        # Определяем стандарт WiFi и устанавливаем соответствующую скорость
+                                        if '802.11ax' in iwconfig_output or 'Wi-Fi 6' in iwconfig_output:
+                                            up_mbps = 1200  # Mbps для WiFi 6
+                                            down_mbps = 1200
+                                        elif '802.11ac' in iwconfig_output or 'Wi-Fi 5' in iwconfig_output:
+                                            up_mbps = 866   # Mbps для WiFi 5
+                                            down_mbps = 866
+                                        elif '802.11n' in iwconfig_output:
+                                            up_mbps = 300   # Mbps для WiFi 4
+                                            down_mbps = 300
+                                        elif '802.11g' in iwconfig_output:
+                                            up_mbps = 54    # Mbps для WiFi g
+                                            down_mbps = 54
+                                        else:
+                                            up_mbps = 54    # Mbps для старых стандартов
+                                            down_mbps = 54
+                                    except:
+                                        pass
+                                
+                                # Метод 4: Через /sys/class/net для получения максимальной скорости
+                                if up_mbps is None:
+                                    try:
+                                        if os.path.exists(f'/sys/class/net/{iface_name}/device/max_speed'):
+                                            with open(f'/sys/class/net/{iface_name}/device/max_speed', 'r') as f:
+                                                max_speed = f.read().strip()
+                                                if max_speed.isdigit():
+                                                    up_mbps = int(max_speed)
+                                                    down_mbps = int(max_speed)
+                                    except:
+                                        pass
+                                
                                 # Определяем тип интерфейса
                                 interface_type = "Unknown"
                                 if 'wlan' in iface_name or 'wifi' in iface_name or 'wl' in iface_name or iface_name.startswith('wl'):
@@ -658,8 +719,8 @@ def get_network_info():
                                     pass
                                 
                                 networks.append({
-                                    "up_mbps": None,
-                                    "down_mbps": None,
+                                    "up_mbps": up_mbps,
+                                    "down_mbps": down_mbps,
                                     "ports": iface_name,
                                     "type": interface_type
                                 })
@@ -685,9 +746,22 @@ def get_network_info():
                                             elif 'eth' in iface_name or 'en' in iface_name:
                                                 interface_type = "Ethernet"
                                             
+                                            # Пытаемся получить скорость для этого интерфейса
+                                            up_mbps = None
+                                            down_mbps = None
+                                            try:
+                                                if os.path.exists(f'/sys/class/net/{iface_name}/speed'):
+                                                    with open(f'/sys/class/net/{iface_name}/speed', 'r') as f:
+                                                        speed = f.read().strip()
+                                                        if speed != '-1' and speed.isdigit():
+                                                            up_mbps = int(speed)
+                                                            down_mbps = int(speed)
+                                            except:
+                                                pass
+                                            
                                             networks.append({
-                                                "up_mbps": None,
-                                                "down_mbps": None,
+                                                "up_mbps": up_mbps,
+                                                "down_mbps": down_mbps,
                                                 "ports": iface_name,
                                                 "type": interface_type
                                             })
@@ -852,8 +926,8 @@ def get_network_usage():
                     else:
                         percent = 0.0
                     
-                    usage[iface] = round(percent, 2)
-                else:
+                usage[iface] = round(percent, 2)
+            else:
                     usage[iface] = 0.0
         else:
             # Для других систем используем базовый подход
