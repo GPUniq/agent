@@ -248,33 +248,56 @@ def get_gpu_info():
                 lspci_output = subprocess.check_output(['lspci', '-nn']).decode(errors='ignore')
                 for line in lspci_output.split('\n'):
                     if 'VGA compatible controller' in line or '3D controller' in line or 'Display controller' in line:
-                        model = line.split(':')[-1].strip()
-                        vendor = "Unknown"
-                        if 'NVIDIA' in model:
-                            vendor = "NVIDIA"
-                        elif 'AMD' in model or 'ATI' in model:
-                            vendor = "AMD"
-                        elif 'Intel' in model:
-                            vendor = "Intel"
-                        
-                        # Проверяем, не добавили ли мы уже эту GPU
-                        already_added = False
-                        for gpu in gpus:
-                            if vendor in gpu["model"] and vendor != "Unknown":
-                                already_added = True
-                                break
-                        
-                        if not already_added:
-                            gpus.append({
-                                "model": model,
-                                "vram_gb": None,
-                                "max_cuda_version": None,
-                                "tflops": None,
-                                "bandwidth_gbps": None,
-                                "vendor": vendor,
-                                "count": 1
-                            })
-            except:
+                        # Правильно парсим строку lspci
+                        # Пример: "01:00.0 VGA compatible controller [0300]: Advanced Micro Devices, Inc. [AMD/ATI] Rembrandt [Radeon 680M] [1681:1681] (rev c8)"
+                        parts = line.split(':')
+                        if len(parts) >= 2:
+                            # Берем часть после первого двоеточия
+                            device_info = ':'.join(parts[1:]).strip()
+                            # Ищем описание устройства
+                            if '[' in device_info and ']' in device_info:
+                                # Извлекаем описание между скобками
+                                start = device_info.find('[')
+                                end = device_info.find(']', start)
+                                if start != -1 and end != -1:
+                                    model = device_info[start+1:end].strip()
+                                else:
+                                    # Если не нашли скобки, берем часть до первого [
+                                    if '[' in device_info:
+                                        model = device_info.split('[')[0].strip()
+                                    else:
+                                        model = device_info.strip()
+                            else:
+                                model = device_info.strip()
+                            
+                            # Определяем vendor
+                            vendor = "Unknown"
+                            if 'NVIDIA' in model or 'nvidia' in model.lower():
+                                vendor = "NVIDIA"
+                            elif 'AMD' in model or 'ATI' in model or 'Radeon' in model:
+                                vendor = "AMD"
+                            elif 'Intel' in model:
+                                vendor = "Intel"
+                            
+                            # Проверяем, не добавили ли мы уже эту GPU
+                            already_added = False
+                            for gpu in gpus:
+                                if vendor in gpu["model"] and vendor != "Unknown":
+                                    already_added = True
+                                    break
+                            
+                            if not already_added and model and len(model) > 3:
+                                gpus.append({
+                                    "model": model,
+                                    "vram_gb": None,
+                                    "max_cuda_version": None,
+                                    "tflops": None,
+                                    "bandwidth_gbps": None,
+                                    "vendor": vendor,
+                                    "count": 1
+                                })
+            except Exception as e:
+                print(f"[WARNING] lspci parsing error: {e}")
                 pass
                         
     except Exception as e:
@@ -326,7 +349,7 @@ def get_disk_info():
         elif system == "Linux":
             # Упрощенный подход как в send_mach_info.py
             try:
-                # Используем lsblk с JSON выводом
+                # Сначала попробуем lsblk с JSON выводом
                 lsblk_output = subprocess.check_output(['lsblk', '-sJap'], stderr=subprocess.DEVNULL).decode(errors='ignore')
                 import json
                 jomsg = json.loads(lsblk_output)
@@ -385,8 +408,26 @@ def get_disk_info():
                                     "read_speed_mb_s": None,
                                     "write_speed_mb_s": None
                                 })
-                except:
-                    pass
+                except Exception as e2:
+                    print(f"[WARNING] Simple lsblk also failed: {e2}")
+                    # Последний fallback - через /proc/partitions
+                    try:
+                        with open('/proc/partitions', 'r') as f:
+                            for line in f.readlines()[2:]:  # Пропускаем заголовки
+                                parts = line.split()
+                                if len(parts) >= 4 and (parts[3].endswith('sd') or parts[3].endswith('nvme') or parts[3].endswith('hd')):
+                                    name = f"/dev/{parts[3]}"
+                                    size_gb = int(parts[2]) // (1024 * 1024)  # Конвертируем из секторов
+                                    disks.append({
+                                        "model": "Unknown",
+                                        "type": "Unknown",
+                                        "size_gb": size_gb,
+                                        "read_speed_mb_s": None,
+                                        "write_speed_mb_s": None
+                                    })
+                    except Exception as e3:
+                        print(f"[WARNING] /proc/partitions also failed: {e3}")
+                        pass
     except Exception as e:
         print(f"[ERROR] Disk info failed: {e}")
     return disks
@@ -585,8 +626,19 @@ def get_network_usage():
                     # Конвертируем в мегабиты в секунду
                     delta_mbps = (delta_bytes * 8) / (1024 * 1024)
                     
-                    # Ограничиваем до 100%
-                    usage[iface] = min(100.0, max(0.0, delta_mbps))
+                    # Предполагаем типичную скорость интерфейса (100 Mbps для Ethernet, 54 Mbps для WiFi)
+                    # и вычисляем процент использования
+                    if 'wlan' in iface or 'wifi' in iface:
+                        max_speed = 54  # Mbps для WiFi
+                    else:
+                        max_speed = 100  # Mbps для Ethernet
+                    
+                    if max_speed > 0:
+                        percent = min(100.0, (delta_mbps / max_speed) * 100)
+                    else:
+                        percent = 0.0
+                    
+                    usage[iface] = round(percent, 2)
                 else:
                     usage[iface] = 0.0
         else:
