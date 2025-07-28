@@ -1,4 +1,5 @@
-BASE_URL = "http://0.0.0.0:8777"
+# BASE_URL = "http://0.0.0.0:8777"
+BASE_URL = "https://api.gpuniq.ru"
 
 import sys
 import subprocess
