@@ -221,127 +221,55 @@ def get_gpu_info():
                         "count": 1
                     })
         elif system == "Linux":
-            # Улучшенное определение GPU для Linux
+            # Упрощенный подход как в v-installator.py
             try:
-                # Сначала попробуем lspci для получения базовой информации
-                lspci_output = subprocess.check_output(['lspci', '-nn']).decode(errors='ignore')
-                gpu_devices = []
-                
-                for line in lspci_output.split('\n'):
-                    if 'VGA compatible controller' in line or '3D controller' in line or 'Display controller' in line:
-                        gpu_devices.append(line)
-                
-                for device in gpu_devices:
-                    try:
-                        # Извлекаем модель из lspci
-                        model = device.split(':')[-1].strip()
-                        
-                        # Определяем vendor и получаем дополнительную информацию
-                        vendor = "Unknown"
-                        vram_gb = None
-                        driver_version = None
-                        
-                        if 'AMD' in model or 'ATI' in model:
-                            vendor = "AMD"
-                            # Попробуем получить информацию через rocm-smi или amdgpu
-                            try:
-                                rocm_output = subprocess.check_output(['rocm-smi', '--showproductname'], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                                if rocm_output.strip():
-                                    model = rocm_output.strip()
-                            except:
-                                pass
-                            
-                            # Попробуем получить VRAM через sysfs
-                            try:
-                                for i in range(10):
-                                    try:
-                                        with open(f'/sys/class/drm/card{i}/device/mem_info_vram_total', 'r') as f:
-                                            vram_bytes = int(f.read().strip())
-                                            vram_gb = vram_bytes // (1024**3)
-                                            break
-                                    except:
-                                        continue
-                            except:
-                                pass
-                                
-                        elif 'NVIDIA' in model:
-                            vendor = "NVIDIA"
-                            # Попробуем nvidia-smi
-                            try:
-                                nvidia_output = subprocess.check_output(['nvidia-smi', '--query-gpu=name,memory.total,driver_version', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                                if nvidia_output.strip():
-                                    parts = nvidia_output.strip().split(',')
-                                    if len(parts) >= 3:
-                                        model = parts[0].strip()
-                                        vram_str = parts[1].strip()
-                                        driver_version = parts[2].strip()
-                                        # Парсим VRAM (например, "8192 MiB")
-                                        vram_match = re.search(r'(\d+)', vram_str)
-                                        if vram_match:
-                                            vram_gb = int(vram_match.group(1))
-                            except:
-                                pass
-                                
-                        elif 'Intel' in model:
-                            vendor = "Intel"
-                            # Попробуем получить информацию через intel_gpu_top или sysfs
-                            try:
-                                for i in range(10):
-                                    try:
-                                        with open(f'/sys/class/drm/card{i}/device/mem_info_vram_total', 'r') as f:
-                                            vram_bytes = int(f.read().strip())
-                                            vram_gb = vram_bytes // (1024**3)
-                                            break
-                                    except:
-                                        continue
-                            except:
-                                pass
-                        
-                        gpus.append({
-                            "model": model,
-                            "vram_gb": vram_gb,
-                            "max_cuda_version": None,  # Можно добавить определение CUDA версии
-                            "tflops": None,
-                            "bandwidth_gbps": None,
-                            "vendor": vendor,
-                            "driver_version": driver_version,
-                            "count": 1
-                        })
-                        
-                    except Exception as e:
-                        print(f"[WARNING] GPU device parsing error: {e}")
-                        continue
-                
-                # Если не удалось получить информацию через lspci, попробуем альтернативные методы
-                if not gpus:
-                    try:
-                        # Попробуем через /proc/gpuinfo (если есть)
-                        if os.path.exists('/proc/gpuinfo'):
-                            with open('/proc/gpuinfo', 'r') as f:
-                                gpuinfo = f.read()
-                                # Парсим информацию о GPU
-                                pass
-                    except:
-                        pass
-                        
-            except Exception as e:
-                print(f"[WARNING] GPU detection error: {e}")
-                # Fallback к базовой информации
+                # Сначала попробуем nvidia-smi для NVIDIA GPU
+                nvidia_output = subprocess.check_output(['nvidia-smi', '-L'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                for line in nvidia_output.strip().split('\n'):
+                    if line:
+                        # Парсим строку вида "GPU 0: NVIDIA GeForce RTX 3080 (UUID: ...)"
+                        match = re.search(r'GPU \d+: (.+?) \(UUID:', line)
+                        if match:
+                            model = match.group(1).strip()
+                            gpus.append({
+                                "model": model,
+                                "vram_gb": None,  # Можно добавить отдельно
+                                "max_cuda_version": None,
+                                "tflops": None,
+                                "bandwidth_gbps": None,
+                                "vendor": "NVIDIA",
+                                "count": 1
+                            })
+            except:
+                pass
+            
+            # Если nvidia-smi не сработал, попробуем lspci
+            if not gpus:
                 try:
-                    lspci = subprocess.check_output(['lspci']).decode(errors='ignore')
-                    for line in lspci.split('\n'):
+                    lspci_output = subprocess.check_output(['lspci', '-nn']).decode(errors='ignore')
+                    for line in lspci_output.split('\n'):
                         if 'VGA compatible controller' in line or '3D controller' in line:
                             model = line.split(':')[-1].strip()
+                            vendor = "Unknown"
+                            if 'NVIDIA' in model:
+                                vendor = "NVIDIA"
+                            elif 'AMD' in model or 'ATI' in model:
+                                vendor = "AMD"
+                            elif 'Intel' in model:
+                                vendor = "Intel"
+                            
                             gpus.append({
                                 "model": model,
                                 "vram_gb": None,
                                 "max_cuda_version": None,
                                 "tflops": None,
                                 "bandwidth_gbps": None,
+                                "vendor": vendor,
                                 "count": 1
                             })
                 except:
                     pass
+                        
     except Exception as e:
         print(f"[ERROR] GPU info failed: {e}")
     return gpus
@@ -389,108 +317,63 @@ def get_disk_info():
                             "write_speed_mb_s": None
                         })
         elif system == "Linux":
-            # Улучшенное определение дисков для Linux
+            # Упрощенный подход как в send_mach_info.py
             try:
-                # Используем lsblk для получения информации о дисках
-                lsblk_output = subprocess.check_output(['lsblk', '-d', '-o', 'NAME,MODEL,SIZE,TYPE,VENDOR'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                # Используем lsblk с JSON выводом
+                lsblk_output = subprocess.check_output(['lsblk', '-sJap'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                import json
+                jomsg = json.loads(lsblk_output)
+                blockdevs = jomsg.get("blockdevices", [])
                 
-                for line in lsblk_output.split('\n')[1:]:  # Пропускаем заголовок
-                    if line.strip() and 'disk' in line:
-                        parts = line.split()
-                        if len(parts) >= 4:
-                            name = parts[0]
-                            model = parts[1] if parts[1] != '-' else "Unknown"
-                            size_str = parts[2]
-                            dtype = parts[3]
-                            
-                            # Парсим размер
-                            size_gb = None
-                            if size_str != '-':
-                                try:
-                                    if 'G' in size_str:
-                                        size_gb = float(size_str.replace('G', ''))
-                                    elif 'T' in size_str:
-                                        size_gb = float(size_str.replace('T', '')) * 1024
-                                    elif 'M' in size_str:
-                                        size_gb = float(size_str.replace('M', '')) / 1024
-                                except:
-                                    pass
-                            
-                            # Определяем тип диска более точно
-                            disk_type = "Unknown"
-                            if dtype == "disk":
-                                # Попробуем определить тип через sysfs
-                                try:
-                                    if os.path.exists(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational'):
-                                        with open(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational', 'r') as f:
-                                            rotational = f.read().strip()
-                                            disk_type = "SSD" if rotational == "0" else "HDD"
-                                except:
-                                    # Альтернативный способ через smartctl
-                                    try:
-                                        smart_output = subprocess.check_output(['smartctl', '-a', name], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                                        if 'Solid State Device' in smart_output:
-                                            disk_type = "SSD"
-                                        elif 'Rotation Rate' in smart_output:
-                                            disk_type = "HDD"
-                                    except:
-                                        pass
-                            
-                            # Получаем дополнительную информацию через hdparm или smartctl
-                            read_speed = None
-                            write_speed = None
-                            
-                            try:
-                                # Попробуем получить скорость чтения через hdparm
-                                hdparm_output = subprocess.check_output(['hdparm', '-t', name], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                                speed_match = re.search(r'(\d+\.?\d*)\s+MB/sec', hdparm_output)
-                                if speed_match:
-                                    read_speed = float(speed_match.group(1))
-                            except:
-                                pass
-                            
-                            disks.append({
-                                "model": model,
-                                "type": disk_type,
-                                "size_gb": size_gb,
-                                "read_speed_mb_s": read_speed,
-                                "write_speed_mb_s": write_speed
-                            })
-                
-                # Если lsblk не сработал, попробуем альтернативные методы
-                if not disks:
-                    try:
-                        # Попробуем через /proc/partitions
-                        with open('/proc/partitions', 'r') as f:
-                            for line in f.readlines()[2:]:  # Пропускаем заголовки
-                                parts = line.split()
-                                if len(parts) >= 4 and parts[3].endswith('sd') or parts[3].endswith('nvme'):
-                                    name = f"/dev/{parts[3]}"
-                                    size_gb = int(parts[2]) // (1024 * 1024)  # Конвертируем из секторов
-                                    disks.append({
-                                        "model": "Unknown",
-                                        "type": "Unknown",
-                                        "size_gb": size_gb,
-                                        "read_speed_mb_s": None,
-                                        "write_speed_mb_s": None
-                                    })
-                    except:
-                        pass
+                for bdev in blockdevs:
+                    if bdev.get("type") == "disk":
+                        name = bdev.get("name", "")
+                        model = bdev.get("model", "Unknown")
+                        size_str = bdev.get("size", "0")
+                        
+                        # Парсим размер
+                        size_gb = None
+                        try:
+                            size_bytes = int(size_str)
+                            size_gb = size_bytes // (1024**3)
+                        except:
+                            pass
+                        
+                        # Определяем тип диска
+                        disk_type = "Unknown"
+                        try:
+                            if os.path.exists(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational'):
+                                with open(f'/sys/block/{name.replace("/dev/", "")}/queue/rotational', 'r') as f:
+                                    rotational = f.read().strip()
+                                    disk_type = "SSD" if rotational == "0" else "HDD"
+                        except:
+                            pass
+                        
+                        disks.append({
+                            "model": model,
+                            "type": disk_type,
+                            "size_gb": size_gb,
+                            "read_speed_mb_s": None,
+                            "write_speed_mb_s": None
+                        })
                         
             except Exception as e:
-                print(f"[WARNING] Disk detection error: {e}")
-                # Fallback к базовой информации
+                print(f"[WARNING] JSON lsblk failed: {e}")
+                # Fallback к простому lsblk
                 try:
-                    lsblk = subprocess.check_output(['lsblk', '-d', '-o', 'NAME,MODEL,SIZE,TYPE'], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                    for line in lsblk.split('\n')[1:]:
+                    lsblk_output = subprocess.check_output(['lsblk', '-d', '-o', 'NAME,MODEL,SIZE,TYPE'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                    for line in lsblk_output.split('\n')[1:]:
                         if line.strip() and 'disk' in line:
                             parts = line.split()
                             if len(parts) >= 4:
                                 name, model, size, dtype = parts[:4]
-                                size_gb = int(float(size.replace('G', '')))
+                                try:
+                                    size_gb = int(float(size.replace('G', '')))
+                                except:
+                                    size_gb = None
                                 disks.append({
                                     "model": model,
-                                    "type": dtype,
+                                    "type": "Unknown",
                                     "size_gb": size_gb,
                                     "read_speed_mb_s": None,
                                     "write_speed_mb_s": None
@@ -539,7 +422,7 @@ def get_network_info():
             except Exception:
                 pass
         elif system == "Linux":
-            # Улучшенное определение сетевых интерфейсов для Linux
+            # Упрощенный подход - только базовое определение интерфейсов
             try:
                 # Используем ip link для получения списка интерфейсов
                 ip_link_output = subprocess.check_output(['ip', '-o', 'link', 'show'], stderr=subprocess.DEVNULL).decode(errors='ignore')
@@ -556,67 +439,16 @@ def get_network_info():
                                 if iface_name == 'lo':
                                     continue
                                 
-                                up_mbps = None
-                                down_mbps = None
-                                
-                                # Попробуем получить скорость через ethtool
-                                try:
-                                    ethtool_output = subprocess.check_output(['ethtool', iface_name], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                                    speed_match = re.search(r'Speed:\s+(\d+)\s*Mb/s', ethtool_output)
-                                    if speed_match:
-                                        speed_mbps = int(speed_match.group(1))
-                                        up_mbps = speed_mbps
-                                        down_mbps = speed_mbps
-                                except:
-                                    # Альтернативный способ через sysfs
-                                    try:
-                                        if os.path.exists(f'/sys/class/net/{iface_name}/speed'):
-                                            with open(f'/sys/class/net/{iface_name}/speed', 'r') as f:
-                                                speed = f.read().strip()
-                                                if speed != '-1' and speed.isdigit():
-                                                    speed_mbps = int(speed)
-                                                    up_mbps = speed_mbps
-                                                    down_mbps = speed_mbps
-                                    except:
-                                        pass
-                                
-                                # Попробуем определить тип интерфейса
+                                # Определяем тип интерфейса
                                 interface_type = "Unknown"
-                                try:
-                                    if os.path.exists(f'/sys/class/net/{iface_name}/type'):
-                                        with open(f'/sys/class/net/{iface_name}/type', 'r') as f:
-                                            net_type = f.read().strip()
-                                            if net_type == '1':
-                                                interface_type = "Ethernet"
-                                            elif net_type == '772':
-                                                interface_type = "Loopback"
-                                            elif net_type == '801':
-                                                interface_type = "Wireless"
-                                except:
-                                    pass
-                                
-                                # Попробуем получить дополнительную информацию через iwconfig для WiFi
                                 if 'wlan' in iface_name or 'wifi' in iface_name:
-                                    try:
-                                        iwconfig_output = subprocess.check_output(['iwconfig', iface_name], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                                        if 'IEEE 802.11' in iwconfig_output:
-                                            interface_type = "WiFi"
-                                            # Попробуем определить стандарт WiFi
-                                            if '802.11ac' in iwconfig_output:
-                                                up_mbps = 1300  # Примерная скорость для 802.11ac
-                                                down_mbps = 1300
-                                            elif '802.11n' in iwconfig_output:
-                                                up_mbps = 300   # Примерная скорость для 802.11n
-                                                down_mbps = 300
-                                            elif '802.11g' in iwconfig_output:
-                                                up_mbps = 54    # Примерная скорость для 802.11g
-                                                down_mbps = 54
-                                    except:
-                                        pass
+                                    interface_type = "WiFi"
+                                elif 'eth' in iface_name or 'en' in iface_name:
+                                    interface_type = "Ethernet"
                                 
                                 networks.append({
-                                    "up_mbps": up_mbps,
-                                    "down_mbps": down_mbps,
+                                    "up_mbps": None,
+                                    "down_mbps": None,
                                     "ports": iface_name,
                                     "type": interface_type
                                 })
