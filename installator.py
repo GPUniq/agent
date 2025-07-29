@@ -798,9 +798,111 @@ def get_network_info():
 # Универсальные функции для hostname и ip
 
 def get_ip_address():
+    """Получает реальный IP адрес для SSH подключения"""
     try:
-        return socket.gethostbyname(socket.gethostname())
-    except Exception:
+        # Метод 1: Попробуем получить внешний IP через внешний сервис
+        try:
+            response = requests.get('https://api.ipify.org', timeout=5)
+            if response.status_code == 200:
+                external_ip = response.text.strip()
+                if external_ip and external_ip != '127.0.0.1':
+                    return external_ip
+        except:
+            pass
+        
+        # Метод 2: Попробуем другой сервис
+        try:
+            response = requests.get('https://ifconfig.me', timeout=5)
+            if response.status_code == 200:
+                external_ip = response.text.strip()
+                if external_ip and external_ip != '127.0.0.1':
+                    return external_ip
+        except:
+            pass
+        
+        # Метод 3: Для Linux - попробуем получить IP через сетевые интерфейсы
+        if platform.system() == "Linux":
+            try:
+                # Получаем список всех сетевых интерфейсов
+                ip_output = subprocess.check_output(['ip', '-4', 'addr', 'show'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                
+                # Ищем IP адреса, исключая localhost и внутренние сети
+                for line in ip_output.split('\n'):
+                    if 'inet ' in line:
+                        # Парсим строку вида "inet 192.168.1.100/24 brd 192.168.1.255 scope global dynamic noprefixroute eth0"
+                        parts = line.strip().split()
+                        for i, part in enumerate(parts):
+                            if part == 'inet':
+                                if i + 1 < len(parts):
+                                    ip_with_mask = parts[i + 1]
+                                    ip = ip_with_mask.split('/')[0]
+                                    
+                                    # Проверяем, что это не localhost и не внутренний IP
+                                    if (ip != '127.0.0.1' and 
+                                        not ip.startswith('10.') and 
+                                        not ip.startswith('172.16.') and 
+                                        not ip.startswith('172.17.') and 
+                                        not ip.startswith('172.18.') and 
+                                        not ip.startswith('172.19.') and 
+                                        not ip.startswith('172.2') and 
+                                        not ip.startswith('172.3') and 
+                                        not ip.startswith('192.168.')):
+                                        return ip
+                                    
+                                    # Если это локальный IP, но не localhost, тоже можем использовать
+                                    if (ip != '127.0.0.1' and 
+                                        (ip.startswith('192.168.') or 
+                                         ip.startswith('10.') or 
+                                         ip.startswith('172.'))):
+                                        return ip
+            except:
+                pass
+        
+        # Метод 4: Для macOS
+        elif platform.system() == "Darwin":
+            try:
+                # Получаем IP через ifconfig
+                ifconfig_output = subprocess.check_output(['ifconfig']).decode(errors='ignore')
+                for line in ifconfig_output.split('\n'):
+                    if 'inet ' in line and '127.0.0.1' not in line:
+                        parts = line.strip().split()
+                        for i, part in enumerate(parts):
+                            if part == 'inet':
+                                if i + 1 < len(parts):
+                                    ip = parts[i + 1]
+                                    if ip != '127.0.0.1':
+                                        return ip
+            except:
+                pass
+        
+        # Метод 5: Для Windows
+        elif platform.system() == "Windows":
+            try:
+                ipconfig_output = subprocess.check_output(['ipconfig'], shell=True).decode(errors='ignore')
+                for line in ipconfig_output.split('\n'):
+                    if 'IPv4 Address' in line:
+                        ip_match = re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+                        if ip_match:
+                            ip = ip_match.group(1)
+                            if ip != '127.0.0.1':
+                                return ip
+            except:
+                pass
+        
+        # Метод 6: Fallback к старому методу
+        try:
+            hostname = socket.gethostname()
+            ip = socket.gethostbyname(hostname)
+            if ip != '127.0.0.1':
+                return ip
+        except:
+            pass
+        
+        # Если ничего не получилось, возвращаем None
+        return None
+        
+    except Exception as e:
+        print(f"[WARNING] IP address detection error: {e}")
         return None
 
 def get_hostname():
