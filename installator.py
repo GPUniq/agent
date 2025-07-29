@@ -43,8 +43,8 @@ def get_cpu_info():
         elif system == "Linux":
             # Улучшенное получение информации о CPU для Linux
             try:
-            with open('/proc/cpuinfo') as f:
-                lines = f.read()
+                with open('/proc/cpuinfo') as f:
+                    lines = f.read()
                     
                     # Ищем модель процессора
                     model_match = re.search(r'model name\s+:\s+(.+)', lines)
@@ -145,8 +145,8 @@ def get_ram_info():
                 try:
                     ram_type_out = subprocess.check_output(['sudo', 'dmidecode', '-t', 'memory'], stderr=subprocess.DEVNULL).decode(errors='ignore')
                     match = re.search(r'Type:\s+(DDR\w*)', ram_type_out)
-                if match:
-                    ram_type = match.group(1)
+                    if match:
+                        ram_type = match.group(1)
                 except:
                     # Альтернативный способ через /proc/meminfo и lshw
                     try:
@@ -395,15 +395,15 @@ def get_gpu_info():
                                     break
                             
                             if not already_added and model != "Unknown" and len(model) > 3:
-                        gpus.append({
+                                gpus.append({
                                             "model": model,
                                             "vram_gb": vram_gb,
                                             "max_cuda_version": cuda_version,
                                             "tflops": tflops,
                                             "bandwidth_gbps": bandwidth_gbps,
                                             "vendor": vendor,
-                            "count": 1
-                        })
+                                    "count": 1
+                                })
             except Exception as e:
                 print(f"[WARNING] lspci parsing error: {e}")
                 pass
@@ -771,11 +771,11 @@ def get_network_info():
             except Exception as e:
                 print(f"[WARNING] Network detection error: {e}")
                 # Fallback к базовой информации
-            try:
-                ip_link = subprocess.check_output(['ip', '-o', 'link', 'show']).decode(errors='ignore')
-                for line in ip_link.split('\n'):
-                    if line:
-                        iface = line.split(':')[1].strip()
+                try:
+                    ip_link = subprocess.check_output(['ip', '-o', 'link', 'show']).decode(errors='ignore')
+                    for line in ip_link.split('\n'):
+                        if line:
+                            iface = line.split(':')[1].strip()
                             if iface != 'lo':  # Пропускаем loopback
                                 interface_type = "Unknown"
                                 if 'wlan' in iface or 'wifi' in iface or 'wl' in iface or iface.startswith('wl'):
@@ -783,14 +783,14 @@ def get_network_info():
                                 elif 'eth' in iface or 'en' in iface:
                                     interface_type = "Ethernet"
                                 
-                        networks.append({
-                            "up_mbps": None,
-                            "down_mbps": None,
+                                networks.append({
+                                    "up_mbps": None,
+                                    "down_mbps": None,
                                     "ports": iface,
                                     "type": interface_type
-                        })
+                                })
                 except:
-                pass
+                    pass
     except Exception as e:
         print(f"[ERROR] Network info failed: {e}")
     return networks
@@ -1028,8 +1028,8 @@ def get_network_usage():
                     else:
                         percent = 0.0
                     
-                usage[iface] = round(percent, 2)
-            else:
+                    usage[iface] = round(percent, 2)
+                else:
                     usage[iface] = 0.0
         else:
             # Для других систем используем базовый подход
