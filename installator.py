@@ -787,59 +787,248 @@ def get_cpu_info():
     system = platform.system()
     try:
         if system == "Darwin":
-            model = subprocess.check_output(['sysctl', '-n', 'machdep.cpu.brand_string']).decode().strip()
-        elif system == "Windows":
-            model = subprocess.check_output(['wmic', 'cpu', 'get', 'Name'], shell=True).decode(errors='ignore').split('\n')[1].strip()
-        elif system == "Linux":
-            # Улучшенное получение информации о CPU для Linux
+            # Получаем информацию о CPU для macOS
             try:
-                with open('/proc/cpuinfo') as f:
-                    lines = f.read()
+                model = subprocess.check_output(['sysctl', '-n', 'machdep.cpu.brand_string']).decode().strip()
+                cores = psutil.cpu_count(logical=False)
+                threads = psutil.cpu_count(logical=True)
+                
+                # Получаем частоту через sysctl
+                freq = None
+                try:
+                    freq_mhz = subprocess.check_output(['sysctl', '-n', 'hw.cpufrequency_max']).decode().strip()
+                    if freq_mhz.isdigit():
+                        freq = float(freq_mhz) / 1000000000  # Конвертируем в GHz
+                except:
+                    pass
+                
+                cpu_info.append({
+                    "model": model,
+                    "cores": cores,
+                    "threads": threads,
+                    "freq_ghz": round(freq, 2) if freq else None,
+                    "count": 1
+                })
+            except Exception as e:
+                print(f"[WARNING] macOS CPU detection failed: {e}")
+                # Fallback
+                cpu_info.append({
+                    "model": platform.processor(),
+                    "cores": psutil.cpu_count(logical=False),
+                    "threads": psutil.cpu_count(logical=True),
+                    "freq_ghz": None,
+                    "count": 1
+                })
+        elif system == "Windows":
+            # Получаем информацию о всех CPU через wmic
+            try:
+                wmic_output = subprocess.check_output(['wmic', 'cpu', 'get', 'Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed'], shell=True).decode(errors='ignore')
+                lines = wmic_output.strip().split('\n')[1:]  # Пропускаем заголовок
+                
+                cpu_groups = {}
+                for line in lines:
+                    if line.strip():
+                        parts = line.split()
+                        if len(parts) >= 4:
+                            # Собираем название модели (может содержать пробелы)
+                            model_parts = parts[:-3]  # Все части кроме последних 3
+                            model = ' '.join(model_parts)
+                            cores = int(parts[-3]) if parts[-3].isdigit() else 1
+                            threads = int(parts[-2]) if parts[-2].isdigit() else 1
+                            freq_mhz = int(parts[-1]) if parts[-1].isdigit() else None
+                            freq_ghz = freq_mhz / 1000 if freq_mhz else None
+                            
+                            # Группируем по модели
+                            if model in cpu_groups:
+                                cpu_groups[model]['count'] += 1
+                                cpu_groups[model]['cores'] += cores
+                                cpu_groups[model]['threads'] += threads
+                                if freq_ghz and (cpu_groups[model]['freq_ghz'] is None or freq_ghz > cpu_groups[model]['freq_ghz']):
+                                    cpu_groups[model]['freq_ghz'] = freq_ghz
+                            else:
+                                cpu_groups[model] = {
+                                    'model': model,
+                                    'cores': cores,
+                                    'threads': threads,
+                                    'freq_ghz': freq_ghz,
+                                    'count': 1
+                                }
+                
+                # Добавляем сгруппированные CPU
+                for cpu_data in cpu_groups.values():
+                    cpu_info.append(cpu_data)
                     
-                    # Ищем модель процессора
-                    model_match = re.search(r'model name\s+:\s+(.+)', lines)
+            except Exception as e:
+                print(f"[WARNING] Windows CPU detection failed: {e}")
+                # Fallback к базовому методу
+                model = subprocess.check_output(['wmic', 'cpu', 'get', 'Name'], shell=True).decode(errors='ignore').split('\n')[1].strip()
+                cores = psutil.cpu_count(logical=False)
+                threads = psutil.cpu_count(logical=True)
+                freq = psutil.cpu_freq().max / 1000 if psutil.cpu_freq() else None
+                cpu_info.append({
+                    "model": model,
+                    "cores": cores,
+                    "threads": threads,
+                    "freq_ghz": round(freq, 2) if freq else None,
+                    "count": 1
+                })
+        elif system == "Linux":
+            # Улучшенное получение информации о CPU для Linux с поддержкой множественных CPU
+            try:
+                # Получаем информацию о количестве сокетов (физических CPU)
+                try:
+                    lscpu_output = subprocess.check_output(['lscpu']).decode()
+                    print(f"[DEBUG] lscpu output: {lscpu_output}")
+                    
+                    sockets_match = re.search(r'Socket\(s\):\s+(\d+)', lscpu_output)
+                    sockets = int(sockets_match.group(1)) if sockets_match else 1
+                    print(f"[DEBUG] Detected sockets from lscpu: {sockets}")
+                    
+                    # Альтернативный способ определения сокетов через /proc/cpuinfo
+                    if sockets == 1:
+                        try:
+                            with open('/proc/cpuinfo') as f:
+                                cpuinfo_lines = f.read()
+                                # Ищем физический ID процессоров
+                                physical_ids = set()
+                                for line in cpuinfo_lines.split('\n'):
+                                    if line.startswith('physical id'):
+                                        physical_id = line.split(':')[1].strip()
+                                        physical_ids.add(physical_id)
+                                if len(physical_ids) > 1:
+                                    sockets = len(physical_ids)
+                                    print(f"[DEBUG] Detected sockets from /proc/cpuinfo: {sockets}")
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to detect sockets from /proc/cpuinfo: {e}")
+                    
+                    # Еще один способ через dmidecode
+                    if sockets == 1:
+                        try:
+                            dmidecode_output = subprocess.check_output(['dmidecode', '-t', 'processor'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                            socket_count = dmidecode_output.count('Socket Designation:')
+                            if socket_count > 1:
+                                sockets = socket_count
+                                print(f"[DEBUG] Detected sockets from dmidecode: {sockets}")
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to detect sockets from dmidecode: {e}")
+                    
+                    # Способ через /sys/devices/system/cpu/
+                    if sockets == 1:
+                        try:
+                            cpu_dirs = [d for d in os.listdir('/sys/devices/system/cpu/') if d.startswith('cpu') and d[3:].isdigit()]
+                            if cpu_dirs:
+                                # Проверяем топологию CPU
+                                topology_file = '/sys/devices/system/cpu/cpu0/topology/physical_package_id'
+                                if os.path.exists(topology_file):
+                                    with open(topology_file, 'r') as f:
+                                        package_ids = set()
+                                        for cpu_dir in cpu_dirs:
+                                            try:
+                                                with open(f'/sys/devices/system/cpu/{cpu_dir}/topology/physical_package_id', 'r') as f:
+                                                    package_id = f.read().strip()
+                                                    package_ids.add(package_id)
+                                            except:
+                                                continue
+                                        if len(package_ids) > 1:
+                                            sockets = len(package_ids)
+                                            print(f"[DEBUG] Detected sockets from /sys/devices/system/cpu/: {sockets}")
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to detect sockets from /sys/devices/system/cpu/: {e}")
+                    
+                    # Способ через NUMA узлы
+                    if sockets == 1:
+                        try:
+                            numa_dirs = [d for d in os.listdir('/sys/devices/system/node/') if d.startswith('node') and d[4:].isdigit()]
+                            if len(numa_dirs) > 1:
+                                sockets = len(numa_dirs)
+                                print(f"[DEBUG] Detected sockets from NUMA nodes: {sockets}")
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to detect sockets from NUMA nodes: {e}")
+                    
+                    # Способ через numactl
+                    if sockets == 1:
+                        try:
+                            numactl_output = subprocess.check_output(['numactl', '--hardware'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                            numa_nodes = numactl_output.count('node ')
+                            if numa_nodes > 1:
+                                sockets = numa_nodes
+                                print(f"[DEBUG] Detected sockets from numactl: {sockets}")
+                        except Exception as e:
+                            print(f"[DEBUG] Failed to detect sockets from numactl: {e}")
+                    
+                    # Получаем модель процессора
+                    model_match = re.search(r'Model name:\s+(.+)', lscpu_output)
                     if model_match:
                         model = model_match.group(1).strip()
                     else:
-                        # Альтернативный способ через lscpu
-                        try:
-                            lscpu_output = subprocess.check_output(['lscpu']).decode()
-                            model_match = re.search(r'Model name:\s+(.+)', lscpu_output)
+                        # Альтернативный способ через /proc/cpuinfo
+                        with open('/proc/cpuinfo') as f:
+                            cpuinfo_lines = f.read()
+                            model_match = re.search(r'model name\s+:\s+(.+)', cpuinfo_lines)
                             model = model_match.group(1).strip() if model_match else platform.processor()
-                        except:
-                            model = platform.processor()
                     
-                    # Получаем количество ядер и потоков
-                    cores = psutil.cpu_count(logical=False)
-                    threads = psutil.cpu_count(logical=True)
+                    # Получаем общее количество ядер и потоков
+                    total_cores = psutil.cpu_count(logical=False)
+                    total_threads = psutil.cpu_count(logical=True)
+                    print(f"[DEBUG] Total cores: {total_cores}, Total threads: {total_threads}")
+                    
+                    # Вычисляем количество ядер и потоков на один сокет
+                    cores_per_socket = total_cores // sockets
+                    threads_per_socket = total_threads // sockets
+                    print(f"[DEBUG] Cores per socket: {cores_per_socket}, Threads per socket: {threads_per_socket}")
+                    
+                    # Проверяем корректность вычислений
+                    if cores_per_socket * sockets != total_cores:
+                        print(f"[WARNING] Socket calculation mismatch: {cores_per_socket} * {sockets} != {total_cores}")
+                        # Используем общие значения, если вычисления некорректны
+                        cores_per_socket = total_cores
+                        threads_per_socket = total_threads
+                        sockets = 1
                     
                     # Получаем частоту через lscpu
                     freq = None
-                    try:
-                        lscpu_output = subprocess.check_output(['lscpu']).decode()
-                        freq_match = re.search(r'CPU max MHz:\s+(\d+)', lscpu_output)
-                        if freq_match:
-                            freq = float(freq_match.group(1)) / 1000  # Конвертируем в GHz
-                        else:
-                            # Альтернативный способ через psutil
-                            cpu_freq = psutil.cpu_freq()
-                            freq = cpu_freq.max / 1000 if cpu_freq else None
-                    except:
+                    freq_match = re.search(r'CPU max MHz:\s+(\d+)', lscpu_output)
+                    if freq_match:
+                        freq = float(freq_match.group(1)) / 1000  # Конвертируем в GHz
+                    else:
+                        # Альтернативный способ через psutil
                         cpu_freq = psutil.cpu_freq()
                         freq = cpu_freq.max / 1000 if cpu_freq else None
                     
-                    # Проверяем, не добавляли ли мы уже такой CPU
-                    existing_cpu = next((cpu for cpu in cpu_info if cpu["model"] == model), None)
-                    if existing_cpu:
-                        # Если CPU уже существует, обновляем информацию
-                        existing_cpu["count"] += 1
-                        # Обновляем общее количество ядер и потоков
-                        existing_cpu["cores"] += cores
-                        existing_cpu["threads"] += threads
-                        # Обновляем частоту (берем максимальную)
-                        if freq and (existing_cpu["freq_ghz"] is None or freq > existing_cpu["freq_ghz"]):
-                            existing_cpu["freq_ghz"] = round(freq, 2)
-                    else:
+                    # Добавляем информацию о CPU
+                    cpu_info.append({
+                        "model": model,
+                        "cores": cores_per_socket,
+                        "threads": threads_per_socket,
+                        "freq_ghz": round(freq, 2) if freq else None,
+                        "count": sockets
+                    })
+                    
+                except Exception as e:
+                    print(f"[WARNING] lscpu failed, using fallback: {e}")
+                    # Fallback к базовому методу
+                    with open('/proc/cpuinfo') as f:
+                        lines = f.read()
+                        
+                        # Ищем модель процессора
+                        model_match = re.search(r'model name\s+:\s+(.+)', lines)
+                        if model_match:
+                            model = model_match.group(1).strip()
+                        else:
+                            model = platform.processor()
+                        
+                        # Получаем количество ядер и потоков
+                        cores = psutil.cpu_count(logical=False)
+                        threads = psutil.cpu_count(logical=True)
+                        
+                        # Получаем частоту через psutil
+                        freq = None
+                        try:
+                            cpu_freq = psutil.cpu_freq()
+                            freq = cpu_freq.max / 1000 if cpu_freq else None
+                        except:
+                            pass
+                        
                         cpu_info.append({
                             "model": model,
                             "cores": cores,
@@ -864,23 +1053,13 @@ def get_cpu_info():
             threads = psutil.cpu_count(logical=True)
             freq = psutil.cpu_freq().max / 1000 if psutil.cpu_freq() else None
             
-            # Проверяем, не добавляли ли мы уже такой CPU
-            existing_cpu = next((cpu for cpu in cpu_info if cpu["model"] == model), None)
-            if existing_cpu:
-                # Если CPU уже существует, обновляем информацию
-                existing_cpu["count"] += 1
-                existing_cpu["cores"] += cores
-                existing_cpu["threads"] += threads
-                if freq and (existing_cpu["freq_ghz"] is None or freq > existing_cpu["freq_ghz"]):
-                    existing_cpu["freq_ghz"] = round(freq, 2)
-            else:
-                cpu_info.append({
-                    "model": model,
-                    "cores": cores,
-                    "threads": threads,
-                    "freq_ghz": round(freq, 2) if freq else None,
-                    "count": 1
-                })
+            cpu_info.append({
+                "model": model,
+                "cores": cores,
+                "threads": threads,
+                "freq_ghz": round(freq, 2) if freq else None,
+                "count": 1
+            })
     except Exception as e:
         print(f"[ERROR] CPU info failed: {e}")
         # Минимальная информация в случае ошибки
@@ -2844,11 +3023,23 @@ if __name__ == "__main__":
         memory_usage = 0
     
     try:
-        gpu_usage = get_gpu_usage()
-        print(f"[INFO] GPU usage collected")
+        gpu_usage_data = get_gpu_usage()
+        # Используем среднее значение GPU usage, как для CPU
+        if "average" in gpu_usage_data:
+            gpu_usage = gpu_usage_data["average"]
+            # Убираем "average" из данных, оставляем только индивидуальные значения
+            del gpu_usage_data["average"]
+        else:
+            # Если нет среднего значения, вычисляем из индивидуальных значений
+            if gpu_usage_data:
+                avg_usage = sum(gpu_usage_data.values()) / len(gpu_usage_data)
+                gpu_usage = round(avg_usage, 1)
+            else:
+                gpu_usage = 0
+        print(f"[INFO] GPU usage collected: {gpu_usage}%")
     except Exception as e:
         print(f"[WARNING] Failed to get GPU usage: {e}")
-        gpu_usage = {}
+        gpu_usage = 0
     
     try:
         disk_usage = {part.mountpoint: psutil.disk_usage(part.mountpoint).percent for part in psutil.disk_partitions()}
@@ -2870,7 +3061,7 @@ if __name__ == "__main__":
         "status": "online",
         "cpu_usage": cpu_usage,
         "memory_usage": memory_usage,
-        "gpu_usage": gpu_usage,
+        "gpu_usage": gpu_usage,  # Теперь это число, а не словарь
         "disk_usage": disk_usage,
         "network_usage": network_usage,
     }
