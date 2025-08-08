@@ -1029,53 +1029,72 @@ def get_gpu_info():
                                                 pass
                                         # Получаем количество CUDA ядер через nvidia-smi для конкретной GPU
                                         try:
-                                             # Попробуем получить количество CUDA ядер напрямую для конкретной GPU
-                                             # Попробуем получить общую информацию для всех GPU, а затем найдем нужную
-                                             cuda_cores_output = subprocess.check_output(['nvidia-smi', '--query-gpu=compute_cap,sm_count', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                                             # Попробуем получить количество CUDA ядер через альтернативные методы
+                                             # Метод 1: Попробуем получить через nvidia-smi с другими параметрами
+                                             try:
+                                                 cuda_cores_output = subprocess.check_output(['nvidia-smi', '--query-gpu=compute_cap,sm_count', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                                             except:
+                                                 # Метод 2: Попробуем получить через nvidia-smi без специфичных параметров
+                                                 cuda_cores_output = subprocess.check_output(['nvidia-smi', '--query-gpu=name,compute_cap', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                              if cuda_cores_output.strip():
                                                  # Получаем информацию для всех GPU и находим нужную
                                                  gpu_lines = cuda_cores_output.strip().split('\n')
                                                  if gpu_index < len(gpu_lines):
                                                      parts = gpu_lines[gpu_index].strip().split(',')
                                                      if len(parts) >= 2:
-                                                         compute_cap = parts[0].strip()
-                                                         sm_count = int(parts[1].strip())
-                                                     
-                                                     # Определяем количество CUDA ядер на основе SM count и compute capability
-                                                     if '9.0' in compute_cap:  # Blackwell (RTX 5090)
-                                                         cuda_cores = sm_count * 144  # 144 CUDA cores per SM
-                                                     elif '8.9' in compute_cap:  # Ada Lovelace
-                                                         cuda_cores = sm_count * 128  # 128 CUDA cores per SM
-                                                     elif '8.6' in compute_cap:  # Ampere
-                                                         cuda_cores = sm_count * 128  # 128 CUDA cores per SM
-                                                     elif '7.5' in compute_cap:  # Turing
-                                                         cuda_cores = sm_count * 64   # 64 CUDA cores per SM
-                                                     elif '6.1' in compute_cap:  # Pascal
-                                                         cuda_cores = sm_count * 128  # 128 CUDA cores per SM
-                                                     else:
-                                                         # Fallback: используем примерную оценку на основе VRAM
-                                                         if vram_gb:
-                                                             # Примерная оценка на основе VRAM (более универсальная)
-                                                             cuda_cores = vram_gb * 600  # Базовая оценка
+                                                         # Проверяем, какой формат получили
+                                                         if 'RTX' in parts[0] or 'GeForce' in parts[0]:
+                                                             # Формат: name,compute_cap
+                                                             compute_cap = parts[1].strip()
+                                                             # Оценка SM count на основе модели и compute capability
+                                                             if '9.0' in compute_cap:  # Blackwell (RTX 5090)
+                                                                 sm_count = 128  # Примерное количество SM для RTX 5090
+                                                             elif '8.9' in compute_cap:  # Ada Lovelace
+                                                                 sm_count = 128  # Примерное количество SM для RTX 4090
+                                                             elif '8.6' in compute_cap:  # Ampere
+                                                                 sm_count = 82   # Примерное количество SM для RTX 3090
+                                                             else:
+                                                                 sm_count = 68   # Базовое количество SM
+                                                         else:
+                                                             # Формат: compute_cap,sm_count
+                                                             compute_cap = parts[0].strip()
+                                                             sm_count = int(parts[1].strip())
                                                          
-                                                         # Попробуем получить через sysfs для Linux
-                                                         if not cuda_cores:
-                                                             try:
-                                                                 for i in range(10):
-                                                                     try:
-                                                                         with open(f'/sys/class/drm/card{i}/device/gpu_busy_percent', 'r') as f:
-                                                                             # Если файл существует, это GPU
-                                                                             # Попробуем получить информацию о SM count
-                                                                             if os.path.exists(f'/sys/class/drm/card{i}/device/sm_count'):
-                                                                                 with open(f'/sys/class/drm/card{i}/device/sm_count', 'r') as f:
-                                                                                     sm_count = int(f.read().strip())
-                                                                                     # Примерная оценка: SM count * 128
-                                                                                     cuda_cores = sm_count * 128
-                                                                                     break
-                                                                     except:
-                                                                         continue
-                                                             except:
-                                                                 pass
+                                                         # Определяем количество CUDA ядер на основе SM count и compute capability
+                                                         if '9.0' in compute_cap:  # Blackwell (RTX 5090)
+                                                             cuda_cores = sm_count * 144  # 144 CUDA cores per SM
+                                                         elif '8.9' in compute_cap:  # Ada Lovelace
+                                                             cuda_cores = sm_count * 128  # 128 CUDA cores per SM
+                                                         elif '8.6' in compute_cap:  # Ampere
+                                                             cuda_cores = sm_count * 128  # 128 CUDA cores per SM
+                                                         elif '7.5' in compute_cap:  # Turing
+                                                             cuda_cores = sm_count * 64   # 64 CUDA cores per SM
+                                                         elif '6.1' in compute_cap:  # Pascal
+                                                             cuda_cores = sm_count * 128  # 128 CUDA cores per SM
+                                                         else:
+                                                             # Fallback: используем примерную оценку на основе VRAM
+                                                             if vram_gb:
+                                                                 # Примерная оценка на основе VRAM (более универсальная)
+                                                                 cuda_cores = vram_gb * 600  # Базовая оценка
+                                                             
+                                                             # Попробуем получить через sysfs для Linux
+                                                             if not cuda_cores:
+                                                                 try:
+                                                                     for i in range(10):
+                                                                         try:
+                                                                             with open(f'/sys/class/drm/card{i}/device/gpu_busy_percent', 'r') as f:
+                                                                                 # Если файл существует, это GPU
+                                                                                 # Попробуем получить информацию о SM count
+                                                                                 if os.path.exists(f'/sys/class/drm/card{i}/device/sm_count'):
+                                                                                     with open(f'/sys/class/drm/card{i}/device/sm_count', 'r') as f:
+                                                                                         sm_count = int(f.read().strip())
+                                                                                         # Примерная оценка: SM count * 128
+                                                                                         cuda_cores = sm_count * 128
+                                                                                         break
+                                                                         except:
+                                                                             continue
+                                                                 except:
+                                                                     pass
                                         except subprocess.TimeoutExpired:
                                             print(f"[WARNING] Timeout getting CUDA cores for GPU {gpu_index}")
                                         except Exception as e:
@@ -1083,18 +1102,32 @@ def get_gpu_info():
                                         
                                         # Получаем информацию о памяти и производительности для конкретной GPU
                                         try:
-                                            # Получаем memory clock и bus width для расчета bandwidth
-                                            memory_info = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.clock,memory.bus_width', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                                            # Попробуем получить memory info через альтернативные методы
+                                            try:
+                                                # Метод 1: Попробуем получить через nvidia-smi с другими параметрами
+                                                memory_info = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.clock,memory.bus_width', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                                            except:
+                                                # Метод 2: Попробуем получить через nvidia-smi без специфичных параметров
+                                                memory_info = subprocess.check_output(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                             if memory_info.strip():
                                                 # Получаем информацию для всех GPU и находим нужную
                                                 gpu_lines = memory_info.strip().split('\n')
                                                 if gpu_index < len(gpu_lines):
                                                     parts = gpu_lines[gpu_index].strip().split(',')
                                                     if len(parts) >= 2:
-                                                        memory_clock_mhz = float(parts[0].strip())
-                                                        bus_width = int(parts[1].strip())
-                                                        # Рассчитываем bandwidth: (memory_clock * 2 * bus_width) / 8
-                                                        bandwidth_gbps = (memory_clock_mhz * 2 * bus_width) / 8000
+                                                        # Проверяем, какой формат получили
+                                                        if 'RTX' in parts[0] or 'GeForce' in parts[0]:
+                                                            # Формат: name,memory.total - используем fallback для bandwidth
+                                                            pass
+                                                        else:
+                                                            # Формат: memory.clock,memory.bus_width
+                                                            try:
+                                                                memory_clock_mhz = float(parts[0].strip())
+                                                                bus_width = int(parts[1].strip())
+                                                                # Рассчитываем bandwidth: (memory_clock * 2 * bus_width) / 8
+                                                                bandwidth_gbps = (memory_clock_mhz * 2 * bus_width) / 8000
+                                                            except:
+                                                                pass
                                         except subprocess.TimeoutExpired:
                                             print(f"[WARNING] Timeout getting memory info for GPU {gpu_index}")
                                         except Exception as e:
@@ -1145,6 +1178,27 @@ def get_gpu_info():
                                         
                                         # Fallback для TFLOPS если не удалось получить clock info
                                         if not tflops and cuda_cores:
+                                            # Попробуем получить через альтернативные методы
+                                            try:
+                                                # Метод 1: Попробуем получить через nvidia-smi с другими параметрами
+                                                clock_info = subprocess.check_output(['nvidia-smi', '--query-gpu=clocks.current.graphics', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                                            except:
+                                                # Метод 2: Попробуем получить через nvidia-smi без специфичных параметров
+                                                try:
+                                                    clock_info = subprocess.check_output(['nvidia-smi', '--query-gpu=name,clocks.current.graphics', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                                                except:
+                                                    clock_info = ""
+                                            
+                                            if clock_info.strip():
+                                                # Получаем информацию для всех GPU и находим нужную
+                                                gpu_lines = clock_info.strip().split('\n')
+                                                if gpu_index < len(gpu_lines):
+                                                    try:
+                                                        graphics_clock_mhz = float(gpu_lines[gpu_index].strip())
+                                                        # Оценка TFLOPS: (cuda_cores * graphics_clock * 2) / 1000000
+                                                        tflops = (cuda_cores * graphics_clock_mhz * 2) / 1000000
+                                                    except:
+                                                        pass
                                             # Попробуем получить через sysfs
                                             try:
                                                 for i in range(10):
