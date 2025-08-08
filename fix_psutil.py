@@ -28,6 +28,26 @@ def fix_psutil():
     subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "psutil"], capture_output=True)
     subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "python3-psutil"], capture_output=True)
     
+    # Удаляем системную версию через apt
+    print("1.1. Удаляем системную версию через apt...")
+    subprocess.run(["sudo", "apt-get", "remove", "-y", "python3-psutil"], capture_output=True)
+    subprocess.run(["sudo", "apt-get", "purge", "-y", "python3-psutil"], capture_output=True)
+    
+    # Удаляем файлы вручную
+    print("1.2. Удаляем файлы psutil вручную...")
+    psutil_paths = [
+        "/usr/lib/python3/dist-packages/psutil",
+        "/usr/lib/python3/dist-packages/psutil-*",
+        "/usr/local/lib/python3.*/dist-packages/psutil",
+        "/usr/local/lib/python3.*/site-packages/psutil"
+    ]
+    
+    for path in psutil_paths:
+        try:
+            subprocess.run(["sudo", "rm", "-rf", path], capture_output=True)
+        except:
+            pass
+    
     # Очищаем кэш
     print("2. Очищаем кэш pip...")
     subprocess.run([sys.executable, "-m", "pip", "cache", "purge"], capture_output=True)
@@ -52,7 +72,29 @@ def fix_psutil():
         return True
     except Exception as e:
         print(f"❌ psutil все еще не работает: {e}")
-        return False
+        
+        # Показываем пути Python
+        print("5. Диагностика путей Python...")
+        import sys
+        for path in sys.path:
+            print(f"   {path}")
+        
+        # Пробуем принудительно использовать пользовательскую версию
+        print("6. Пробуем принудительно использовать пользовательскую версию...")
+        user_site = subprocess.check_output([sys.executable, "-m", "site", "--user-site"], text=True).strip()
+        print(f"   Пользовательский site: {user_site}")
+        
+        # Добавляем пользовательский путь в начало
+        if user_site not in sys.path:
+            sys.path.insert(0, user_site)
+        
+        try:
+            import psutil
+            print("✅ psutil работает с пользовательской версией!")
+            return True
+        except Exception as e2:
+            print(f"❌ psutil все еще не работает: {e2}")
+            return False
 
 if __name__ == "__main__":
     if fix_psutil():
