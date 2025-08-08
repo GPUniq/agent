@@ -1782,30 +1782,56 @@ def get_network_info():
                                 
                                 # Fallback для скорости на основе типа интерфейса
                                 if up_mbps is None:
-                                    if interface_type == "Ethernet":
-                                        # Определяем скорость по имени интерфейса
-                                        if '10g' in iface_name or '10G' in iface_name:
-                                            up_mbps = 10000
-                                            down_mbps = 10000
-                                        elif '25g' in iface_name or '25G' in iface_name:
-                                            up_mbps = 25000
-                                            down_mbps = 25000
-                                        elif '40g' in iface_name or '40G' in iface_name:
-                                            up_mbps = 40000
-                                            down_mbps = 40000
-                                        elif '100g' in iface_name or '100G' in iface_name:
-                                            up_mbps = 100000
-                                            down_mbps = 100000
+                                    # Попробуем получить через другие методы
+                                    try:
+                                        # Метод 1: Через /proc/net/dev для получения статистики
+                                        with open('/proc/net/dev', 'r') as f:
+                                            for line in f.readlines()[2:]:
+                                                if iface_name in line:
+                                                    parts = line.split()
+                                                    if len(parts) >= 10:
+                                                        # Получаем байты отправленные и полученные
+                                                        bytes_recv = int(parts[1])
+                                                        bytes_sent = int(parts[9])
+                                                        # Примерная оценка на основе статистики
+                                                        if bytes_recv > 0 or bytes_sent > 0:
+                                                            # Если есть трафик, предполагаем активный интерфейс
+                                                            if interface_type == "Ethernet":
+                                                                up_mbps = 1000
+                                                                down_mbps = 1000
+                                                            elif interface_type == "WiFi":
+                                                                up_mbps = 300
+                                                                down_mbps = 300
+                                                            break
+                                    except:
+                                        pass
+                                    
+                                    # Если все еще нет скорости, используем примерную оценку
+                                    if up_mbps is None:
+                                        if interface_type == "Ethernet":
+                                            # Определяем скорость по имени интерфейса
+                                            if '10g' in iface_name or '10G' in iface_name:
+                                                up_mbps = 10000
+                                                down_mbps = 10000
+                                            elif '25g' in iface_name or '25G' in iface_name:
+                                                up_mbps = 25000
+                                                down_mbps = 25000
+                                            elif '40g' in iface_name or '40G' in iface_name:
+                                                up_mbps = 40000
+                                                down_mbps = 40000
+                                            elif '100g' in iface_name or '100G' in iface_name:
+                                                up_mbps = 100000
+                                                down_mbps = 100000
+                                            else:
+                                                # По умолчанию 1Gbps для Ethernet
+                                                up_mbps = 1000
+                                                down_mbps = 1000
+                                        elif interface_type == "WiFi":
+                                            up_mbps = 300  # По умолчанию WiFi 4
+                                            down_mbps = 300
                                         else:
-                                            # По умолчанию 1Gbps для Ethernet
-                                            up_mbps = 1000
+                                            up_mbps = 1000  # По умолчанию 1Gbps
                                             down_mbps = 1000
-                                    elif interface_type == "WiFi":
-                                        up_mbps = 300  # По умолчанию WiFi 4
-                                        down_mbps = 300
-                                    else:
-                                        up_mbps = 1000  # По умолчанию 1Gbps
-                                        down_mbps = 1000
                                 
                                 networks.append({
                                     "up_mbps": up_mbps,
