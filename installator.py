@@ -767,7 +767,7 @@ def get_network_info():
                                             })
                     except:
                         pass
-                        
+
             except Exception as e:
                 print(f"[WARNING] Network detection error: {e}")
                 # Fallback к базовой информации
@@ -907,6 +907,54 @@ def get_ip_address():
 
 def get_hostname():
     return platform.node()
+
+def get_location_from_ip(ip_address):
+    """Определяет местоположение по IP адресу"""
+    if not ip_address:
+        return "Unknown"
+    
+    try:
+        # Используем ipapi.co для определения местоположения
+        response = requests.get(f'https://ipapi.co/{ip_address}/json/', timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Формируем строку местоположения
+            location_parts = []
+            
+            if data.get('city'):
+                location_parts.append(data['city'])
+            if data.get('region'):
+                location_parts.append(data['region'])
+            if data.get('country_name'):
+                location_parts.append(data['country_name'])
+            
+            if location_parts:
+                return ', '.join(location_parts)
+            
+            # Fallback к коду страны
+            if data.get('country'):
+                return data['country']
+                
+    except Exception as e:
+        print(f"[WARNING] Failed to get location from IP {ip_address}: {e}")
+    
+    # Fallback к определению по часовому поясу
+    try:
+        import time
+        offset = time.timezone if hasattr(time, 'timezone') else 0
+        hours = abs(offset) // 3600
+        
+        if offset == 0:
+            return "UTC"
+        elif offset > 0:
+            return f"UTC-{hours:02d}:00"
+        else:
+            return f"UTC+{hours:02d}:00"
+    except:
+        pass
+    
+    return "Unknown"
 
 def get_hardware_info():
     cpus = get_cpu_info()
@@ -1100,6 +1148,34 @@ def get_gpu_usage():
     return gpu_usage
 
 # === Docker и SSH ===
+def get_available_port(start_port=21234, max_attempts=100):
+    """Получает свободный порт для SSH подключения"""
+    import socket
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('localhost', port))
+                return port
+        except OSError:
+            continue
+    return None
+
+def wait_for_ssh_ready(host, port, timeout=60):
+    """Ждет, пока SSH сервис будет готов к подключению"""
+    import socket
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(2)
+                result = s.connect_ex((host, port))
+                if result == 0:
+                    return True
+        except:
+            pass
+        time.sleep(2)
+    return False
+
 def run_docker_container(task):
     import subprocess
     docker_image = task.get('docker_image')
@@ -1107,11 +1183,21 @@ def run_docker_container(task):
     storage = task.get('storage_allocated')
     gpus = task.get('gpus_allocated')
     cpus = task.get('cpus_allocated')
+    
+    # Получаем свободный порт для SSH
+    ssh_port = get_available_port()
+    if not ssh_port:
+        print("[ERROR] No available ports for SSH")
+        return None
+    
+    task_id = task.get('id', int(time.time()))
+    container_name = f"task_{task_id}"
+    
     # Собираем docker run команду
     cmd = [
         'docker', 'run', '-d', '--rm',
-        '--name', f"task_{task.get('id', int(time.time()))}",
-        '-p', '21234:22',  # Пробрасываем порт для ssh
+        '--name', container_name,
+        '-p', f'{ssh_port}:22',  # Пробрасываем порт для ssh
     ]
     if ram:
         cmd += ['--memory', f'{ram}g']
@@ -1124,13 +1210,98 @@ def run_docker_container(task):
         # Можно добавить volume, если нужно
         pass
     cmd += [docker_image]
-    # Предполагаем, что образ уже настроен для ssh (sshd)
+    
     try:
+        print(f"[INFO] Starting container with command: {' '.join(cmd)}")
         container_id = subprocess.check_output(cmd).decode().strip()
-        return container_id
+        
+        # Ждем, пока SSH сервис будет готов
+        print(f"[INFO] Waiting for SSH service to be ready on port {ssh_port}...")
+        if wait_for_ssh_ready('localhost', ssh_port):
+            print(f"[INFO] SSH service is ready on port {ssh_port}")
+        else:
+            print(f"[WARNING] SSH service not ready within timeout on port {ssh_port}")
+        
+        # Получаем IP адрес хоста для подключения
+        host_ip = get_ip_address() or 'localhost'
+        
+        return {
+            'container_id': container_id,
+            'container_name': container_name,
+            'ssh_port': ssh_port,
+            'ssh_host': host_ip,
+            'ssh_command': f"ssh -p {ssh_port} root@{host_ip}",
+            'status': 'running'
+        }
     except Exception as e:
         print(f"[ERROR] Docker run failed: {e}")
         return None
+
+def stop_docker_container(container_info):
+    """Останавливает Docker контейнер"""
+    import subprocess
+    try:
+        container_name = container_info.get('container_name')
+        if container_name:
+            cmd = ['docker', 'stop', container_name]
+            subprocess.run(cmd, check=True)
+            print(f"[INFO] Container {container_name} stopped")
+            return True
+    except Exception as e:
+        print(f"[ERROR] Failed to stop container: {e}")
+    return False
+
+def get_container_status(container_name):
+    """Получает статус Docker контейнера"""
+    import subprocess
+    try:
+        cmd = ['docker', 'ps', '--filter', f'name={container_name}', '--format', '{{.Status}}']
+        result = subprocess.check_output(cmd).decode().strip()
+        return 'running' if result else 'stopped'
+    except:
+        return 'unknown'
+
+def list_running_containers():
+    """Получает список запущенных контейнеров"""
+    import subprocess
+    try:
+        cmd = ['docker', 'ps', '--format', '{{.Names}}\t{{.Status}}\t{{.Ports}}']
+        result = subprocess.check_output(cmd).decode().strip()
+        containers = []
+        for line in result.split('\n'):
+            if line.strip():
+                parts = line.split('\t')
+                if len(parts) >= 3:
+                    containers.append({
+                        'name': parts[0],
+                        'status': parts[1],
+                        'ports': parts[2]
+                    })
+        return containers
+    except Exception as e:
+        print(f"[ERROR] Failed to list containers: {e}")
+        return []
+
+def cleanup_stopped_containers():
+    """Удаляет остановленные контейнеры"""
+    import subprocess
+    try:
+        cmd = ['docker', 'container', 'prune', '-f']
+        subprocess.run(cmd, check=True)
+        print("[INFO] Cleaned up stopped containers")
+    except Exception as e:
+        print(f"[ERROR] Failed to cleanup containers: {e}")
+
+def test_ssh_connection(host, port, timeout=10):
+    """Тестирует SSH подключение к контейнеру"""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            result = s.connect_ex((host, port))
+            return result == 0
+    except:
+        return False
 
 def poll_for_tasks(agent_id, secret_key):
     url = f"{BASE_URL}/v1/agents/{agent_id}/tasks/pull"
@@ -1146,12 +1317,18 @@ def poll_for_tasks(agent_id, secret_key):
                 task = resp_json.get('data')
                 if task and task.get('task_id') is not None and task.get('task_data') is not None:
                     print(f"[INFO] New task received: {task}")
-                    container_id = run_docker_container(task)
-                    if container_id:
-                        print(f"[INFO] Docker container started: {container_id}")
-                        print(f"[INFO] Container is ready for tasks")
-                        # Можно отправить статус задачи обратно на сервер
-                        send_task_status(agent_id, task.get('id'), secret_key, container_id)
+                    container_info = run_docker_container(task)
+                    if container_info:
+                        print(f"[INFO] Docker container started: {container_info['container_id']}")
+                        print(f"[INFO] SSH connection info:")
+                        print(f"  Host: {container_info['ssh_host']}")
+                        print(f"  Port: {container_info['ssh_port']}")
+                        print(f"  Command: {container_info['ssh_command']}")
+                        print(f"[INFO] Container is ready for SSH connection")
+                        # Отправляем статус задачи обратно на сервер с информацией о SSH
+                        send_task_status(agent_id, task.get('id'), secret_key, container_info)
+                    else:
+                        print(f"[ERROR] Failed to start container for task {task.get('id')}")
                 else:
                     print(f"[INFO] No valid task received: {task}")
             else:
@@ -1161,7 +1338,7 @@ def poll_for_tasks(agent_id, secret_key):
             print(f"[ERROR] Polling failed: {e}")
         time.sleep(10)  # Пауза между запросами
 
-def send_task_status(agent_id, task_id, secret_key, container_id):
+def send_task_status(agent_id, task_id, secret_key, container_info):
     url = f"{BASE_URL}/v1/agents/{agent_id}/tasks/{task_id}/status"
     headers = {
         "Content-Type": "application/json",
@@ -1169,12 +1346,18 @@ def send_task_status(agent_id, task_id, secret_key, container_id):
     }
     data = {
         "status": "running",
-        "container_id": container_id,
-        "output": f"Container {container_id} started successfully"
+        "container_id": container_info['container_id'],
+        "container_name": container_info['container_name'],
+        "ssh_host": container_info['ssh_host'],
+        "ssh_port": container_info['ssh_port'],
+        "ssh_command": container_info['ssh_command'],
+        "output": f"Container {container_info['container_name']} started successfully. SSH ready on {container_info['ssh_host']}:{container_info['ssh_port']}"
     }
     try:
         response = requests.post(url, headers=headers, json=data, timeout=10)
         print(f"[INFO] Task status updated: {response.status_code}")
+        if response.status_code == 200:
+            print(f"[INFO] SSH connection details sent to server")
     except Exception as e:
         print(f"[ERROR] Failed to update task status: {e}")
 
@@ -1203,12 +1386,19 @@ def confirm_agent(secret_key, data):
 if __name__ == "__main__":
     import json
     if len(sys.argv) < 2:
-        print("Usage: python installator.py <secret_key> [location]")
+        print("Usage: python installator.py <secret_key>")
         sys.exit(1)
     secret_key = sys.argv[1]
     
-    # Получаем настраиваемые параметры из аргументов командной строки или переменных окружения
-    location = sys.argv[2] if len(sys.argv) > 2 else os.environ.get('AGENT_LOCATION', 'Unknown')
+    # Автоматически определяем location по IP адресу
+    print("[INFO] Detecting location automatically from IP address...")
+    ip_address = get_ip_address()
+    if ip_address:
+        location = get_location_from_ip(ip_address)
+        print(f"[INFO] Detected location: {location} (IP: {ip_address})")
+    else:
+        location = "Unknown"
+        print("[WARNING] Could not detect IP address, using 'Unknown' location")
     
     # Проверяем, есть ли сохранённый agent_id
     agent_id = None
@@ -1244,6 +1434,25 @@ if __name__ == "__main__":
     # Запускаем polling в отдельном потоке
     polling_thread = threading.Thread(target=poll_for_tasks, args=(agent_id, secret_key), daemon=True)
     polling_thread.start()
-    # Основной поток просто ждет
+    
+    # Основной цикл с периодической очисткой и мониторингом
+    cleanup_counter = 0
     while True:
         time.sleep(60)
+        cleanup_counter += 1
+        
+        # Каждые 10 минут (10 * 60 секунд) очищаем остановленные контейнеры
+        if cleanup_counter >= 10:
+            print("[INFO] Running periodic cleanup...")
+            cleanup_stopped_containers()
+            
+            # Показываем список запущенных контейнеров
+            running_containers = list_running_containers()
+            if running_containers:
+                print(f"[INFO] Currently running containers: {len(running_containers)}")
+                for container in running_containers:
+                    print(f"  - {container['name']}: {container['status']} ({container['ports']})")
+            else:
+                print("[INFO] No running containers")
+            
+            cleanup_counter = 0
