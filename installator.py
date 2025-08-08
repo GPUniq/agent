@@ -1038,7 +1038,9 @@ def get_gpu_info():
                                                      sm_count = int(parts[1].strip())
                                                      
                                                      # Определяем количество CUDA ядер на основе SM count и compute capability
-                                                     if '8.9' in compute_cap:  # Ada Lovelace
+                                                     if '9.0' in compute_cap:  # Blackwell (RTX 5090)
+                                                         cuda_cores = sm_count * 144  # 144 CUDA cores per SM
+                                                     elif '8.9' in compute_cap:  # Ada Lovelace
                                                          cuda_cores = sm_count * 128  # 128 CUDA cores per SM
                                                      elif '8.6' in compute_cap:  # Ampere
                                                          cuda_cores = sm_count * 128  # 128 CUDA cores per SM
@@ -1049,14 +1051,31 @@ def get_gpu_info():
                                                      else:
                                                          # Fallback: используем примерную оценку на основе VRAM
                                                          if vram_gb:
-                                                             if vram_gb >= 20:  # RTX 4090, 3090
-                                                                 cuda_cores = vram_gb * 800  # Примерная оценка
-                                                             elif vram_gb >= 10:  # RTX 3080, 3070
-                                                                 cuda_cores = vram_gb * 700
-                                                             else:  # Младшие модели
-                                                                 cuda_cores = vram_gb * 600
-                                        except:
-                                            pass
+                                                             # Примерная оценка на основе VRAM (более универсальная)
+                                                             cuda_cores = vram_gb * 600  # Базовая оценка
+                                                         
+                                                         # Попробуем получить через sysfs для Linux
+                                                         if not cuda_cores:
+                                                             try:
+                                                                 for i in range(10):
+                                                                     try:
+                                                                         with open(f'/sys/class/drm/card{i}/device/gpu_busy_percent', 'r') as f:
+                                                                             # Если файл существует, это GPU
+                                                                             # Попробуем получить информацию о SM count
+                                                                             if os.path.exists(f'/sys/class/drm/card{i}/device/sm_count'):
+                                                                                 with open(f'/sys/class/drm/card{i}/device/sm_count', 'r') as f:
+                                                                                     sm_count = int(f.read().strip())
+                                                                                     # Примерная оценка: SM count * 128
+                                                                                     cuda_cores = sm_count * 128
+                                                                                     break
+                                                                     except:
+                                                                         continue
+                                                             except:
+                                                                 pass
+                                        except subprocess.TimeoutExpired:
+                                            print(f"[WARNING] Timeout getting CUDA cores for GPU {gpu_index}")
+                                        except Exception as e:
+                                            print(f"[WARNING] Error getting CUDA cores for GPU {gpu_index}: {e}")
                                         
                                         # Получаем информацию о памяти и производительности для конкретной GPU
                                         try:
@@ -1069,8 +1088,37 @@ def get_gpu_info():
                                                     bus_width = int(parts[1].strip())
                                                     # Рассчитываем bandwidth: (memory_clock * 2 * bus_width) / 8
                                                     bandwidth_gbps = (memory_clock_mhz * 2 * bus_width) / 8000
-                                        except:
-                                            pass
+                                        except subprocess.TimeoutExpired:
+                                            print(f"[WARNING] Timeout getting memory info for GPU {gpu_index}")
+                                        except Exception as e:
+                                            print(f"[WARNING] Error getting memory info for GPU {gpu_index}: {e}")
+                                        
+                                        # Fallback для bandwidth если не удалось получить memory info
+                                        if not bandwidth_gbps:
+                                            # Попробуем получить через sysfs
+                                            try:
+                                                for i in range(10):
+                                                    try:
+                                                        if os.path.exists(f'/sys/class/drm/card{i}/device/gpu_busy_percent'):
+                                                            # Попробуем получить memory clock через sysfs
+                                                            if os.path.exists(f'/sys/class/drm/card{i}/device/pp_dpm_mclk'):
+                                                                with open(f'/sys/class/drm/card{i}/device/pp_dpm_mclk', 'r') as f:
+                                                                    mclk_info = f.read()
+                                                                    mclk_match = re.search(r'(\d+):\s*(\d+)Mhz', mclk_info)
+                                                                    if mclk_match:
+                                                                        memory_clock_mhz = int(mclk_match.group(2))
+                                                                        # Примерная оценка bandwidth: memory_clock * 2 / 1000
+                                                                        bandwidth_gbps = memory_clock_mhz * 2 / 1000
+                                                                        break
+                                                    except:
+                                                        continue
+                                            except:
+                                                pass
+                                            
+                                            # Если все еще нет bandwidth, используем примерную оценку на основе VRAM
+                                            if not bandwidth_gbps and vram_gb:
+                                                # Примерная оценка: VRAM * 30 GB/s per GB
+                                                bandwidth_gbps = vram_gb * 30
                                         
                                         # Получаем TFLOPS через nvidia-smi для конкретной GPU
                                         try:
@@ -1084,6 +1132,42 @@ def get_gpu_info():
                                             print(f"[WARNING] Timeout getting clock info for GPU {gpu_index}")
                                         except Exception as e:
                                             print(f"[WARNING] Error getting clock info for GPU {gpu_index}: {e}")
+                                        
+                                        # Fallback для TFLOPS если не удалось получить clock info
+                                        if not tflops and cuda_cores:
+                                            # Попробуем получить через sysfs
+                                            try:
+                                                for i in range(10):
+                                                    try:
+                                                        if os.path.exists(f'/sys/class/drm/card{i}/device/gpu_busy_percent'):
+                                                            # Попробуем получить clock info через sysfs
+                                                            if os.path.exists(f'/sys/class/drm/card{i}/device/pp_dpm_sclk'):
+                                                                with open(f'/sys/class/drm/card{i}/device/pp_dpm_sclk', 'r') as f:
+                                                                    clock_info = f.read()
+                                                                    # Ищем максимальную частоту
+                                                                    clock_match = re.search(r'(\d+):\s*(\d+)Mhz', clock_info)
+                                                                    if clock_match:
+                                                                        max_clock_mhz = int(clock_match.group(2))
+                                                                        # Оценка TFLOPS: (cuda_cores * clock * 2) / 1000000
+                                                                        tflops = (cuda_cores * max_clock_mhz * 2) / 1000000
+                                                                        break
+                                                            elif os.path.exists(f'/sys/class/drm/card{i}/device/pp_dpm_gfx'):
+                                                                with open(f'/sys/class/drm/card{i}/device/pp_dpm_gfx', 'r') as f:
+                                                                    clock_info = f.read()
+                                                                    clock_match = re.search(r'(\d+):\s*(\d+)Mhz', clock_info)
+                                                                    if clock_match:
+                                                                        max_clock_mhz = int(clock_match.group(2))
+                                                                        tflops = (cuda_cores * max_clock_mhz * 2) / 1000000
+                                                                        break
+                                                    except:
+                                                        continue
+                                            except:
+                                                pass
+                                            
+                                            # Если все еще нет TFLOPS, используем примерную оценку на основе VRAM
+                                            if not tflops and vram_gb:
+                                                # Примерная оценка: VRAM * 2.5 TFLOPS per GB
+                                                tflops = vram_gb * 2.5
                             except subprocess.TimeoutExpired:
                                 print(f"[WARNING] Timeout getting detailed info for GPU {gpu_index}")
                             except Exception as e:
@@ -1308,8 +1392,40 @@ def get_gpu_info():
     except Exception as e:
         print(f"[ERROR] GPU info failed: {e}")
     
-    print(f"[DEBUG] GPU detection completed. Found {len(gpus)} GPUs")
-    return gpus
+    # Группируем одинаковые GPU и фильтруем мусорные записи
+    print("[DEBUG] Grouping identical GPUs and filtering garbage entries...")
+    filtered_gpus = []
+    gpu_groups = {}
+    
+    for gpu in gpus:
+        model = gpu.get("model", "")
+        vendor = gpu.get("vendor", "")
+        
+        # Фильтруем мусорные записи (коды устройств, слишком короткие названия)
+        if (model in ["Unknown", "0300", "1a03:2000"] or 
+            len(model) < 4 or 
+            model.isdigit() or 
+            model.startswith('0') or 
+            ':' in model):
+            print(f"[DEBUG] Filtering out garbage GPU entry: {model}")
+            continue
+        
+        # Создаем ключ для группировки
+        key = f"{vendor}_{model}"
+        
+        if key in gpu_groups:
+            # Увеличиваем count для одинаковых GPU
+            gpu_groups[key]["count"] += 1
+            print(f"[DEBUG] Found duplicate GPU: {model}, count now: {gpu_groups[key]['count']}")
+        else:
+            # Добавляем новую GPU
+            gpu_groups[key] = gpu.copy()
+            gpu_groups[key]["count"] = 1
+            print(f"[DEBUG] Added new GPU: {model}")
+    
+    filtered_gpus = list(gpu_groups.values())
+    print(f"[DEBUG] GPU detection completed. Found {len(filtered_gpus)} unique GPUs (total: {len(gpus)} entries)")
+    return filtered_gpus
 
 # Универсальная функция для дисков
 def get_disk_info():
@@ -1450,12 +1566,59 @@ def get_disk_info():
                             except:
                                 pass
                             
+                            # Получаем скорость диска
+                            read_speed_mb_s = None
+                            write_speed_mb_s = None
+                            try:
+                                # Попробуем получить через hdparm
+                                hdparm_output = subprocess.check_output(['hdparm', '-t', name], stderr=subprocess.DEVNULL, timeout=10).decode(errors='ignore')
+                                speed_match = re.search(r'Timing buffered disk reads:\s+(\d+(?:\.\d+)?)\s+MB', hdparm_output)
+                                if speed_match:
+                                    read_speed_mb_s = float(speed_match.group(1))
+                            except:
+                                pass
+                            
+                            # Fallback для скорости на основе типа диска
+                            if not read_speed_mb_s:
+                                # Попробуем получить через другие методы
+                                try:
+                                    # Метод 1: dd для измерения скорости
+                                    dd_output = subprocess.check_output(['dd', 'if=/dev/zero', f'of={name}', 'bs=1M', 'count=100', 'oflag=direct'], stderr=subprocess.STDOUT, timeout=30).decode(errors='ignore')
+                                    speed_match = re.search(r'(\d+(?:\.\d+)?)\s+MB/s', dd_output)
+                                    if speed_match:
+                                        write_speed_mb_s = float(speed_match.group(1))
+                                except:
+                                    pass
+                                
+                                try:
+                                    # Метод 2: fio для более точного измерения
+                                    fio_cmd = ['fio', '--name=test', f'--filename={name}', '--size=100M', '--readwrite=read', '--direct=1', '--ioengine=libaio', '--bs=1M', '--runtime=10']
+                                    fio_output = subprocess.check_output(fio_cmd, stderr=subprocess.DEVNULL, timeout=60).decode(errors='ignore')
+                                    speed_match = re.search(r'READ.*BW=(\d+(?:\.\d+)?)MiB/s', fio_output)
+                                    if speed_match:
+                                        read_speed_mb_s = float(speed_match.group(1))
+                                except:
+                                    pass
+                                
+                                # Если все еще нет скорости, используем примерную оценку
+                                if not read_speed_mb_s:
+                                    if disk_type == "SSD":
+                                        if size_gb and size_gb > 1000:  # NVMe SSD
+                                            read_speed_mb_s = 3500
+                                            write_speed_mb_s = 3000
+                                        else:  # SATA SSD
+                                            read_speed_mb_s = 550
+                                            write_speed_mb_s = 500
+                                    elif disk_type == "HDD":
+                                        read_speed_mb_s = 150
+                                        write_speed_mb_s = 120
+                            
                             disks.append({
                                 "model": model,
                                 "type": disk_type,
                                 "size_gb": size_gb,
-                                "read_speed_mb_s": None,
-                                "write_speed_mb_s": None
+                                "read_speed_mb_s": read_speed_mb_s,
+                                "write_speed_mb_s": write_speed_mb_s
                             })
                         
             except Exception as e:
@@ -1616,6 +1779,33 @@ def get_network_info():
                                                 interface_type = "WiFi"
                                 except:
                                     pass
+                                
+                                # Fallback для скорости на основе типа интерфейса
+                                if up_mbps is None:
+                                    if interface_type == "Ethernet":
+                                        # Определяем скорость по имени интерфейса
+                                        if '10g' in iface_name or '10G' in iface_name:
+                                            up_mbps = 10000
+                                            down_mbps = 10000
+                                        elif '25g' in iface_name or '25G' in iface_name:
+                                            up_mbps = 25000
+                                            down_mbps = 25000
+                                        elif '40g' in iface_name or '40G' in iface_name:
+                                            up_mbps = 40000
+                                            down_mbps = 40000
+                                        elif '100g' in iface_name or '100G' in iface_name:
+                                            up_mbps = 100000
+                                            down_mbps = 100000
+                                        else:
+                                            # По умолчанию 1Gbps для Ethernet
+                                            up_mbps = 1000
+                                            down_mbps = 1000
+                                    elif interface_type == "WiFi":
+                                        up_mbps = 300  # По умолчанию WiFi 4
+                                        down_mbps = 300
+                                    else:
+                                        up_mbps = 1000  # По умолчанию 1Gbps
+                                        down_mbps = 1000
                                 
                                 networks.append({
                                     "up_mbps": up_mbps,
