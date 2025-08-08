@@ -131,6 +131,23 @@ for pkg in REQUIRED_PACKAGES:
 import psutil
 import requests
 
+# Функция для выполнения Docker команд
+def docker_cmd(cmd_args, **kwargs):
+    """Выполняет Docker команду с автоматическим sudo если нужно"""
+    if os.environ.get('DOCKER_CMD') == 'sudo docker':
+        # Используем sudo docker
+        full_cmd = ['sudo', 'docker'] + cmd_args
+    else:
+        # Пробуем обычный docker, если не работает - используем sudo
+        try:
+            full_cmd = ['docker'] + cmd_args
+            result = subprocess.run(full_cmd, **kwargs)
+            return result
+        except:
+            full_cmd = ['sudo', 'docker'] + cmd_args
+    
+    return subprocess.run(full_cmd, **kwargs)
+
 def install_docker():
     """Устанавливает Docker на систему"""
     system = platform.system()
@@ -236,18 +253,64 @@ def check_and_install_docker():
     """Проверяет и устанавливает Docker если необходимо"""
     try:
         # Проверяем, работает ли Docker
-        subprocess.run(['docker', 'ps'], check=True, capture_output=True)
+        docker_cmd(['ps'], check=True, capture_output=True)
         print("[INFO] Docker is working correctly")
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
-        print("[INFO] Docker not working, attempting installation...")
-        if install_docker():
-            print("[INFO] Docker installation completed. Please restart the script to use Docker.")
-            print("[INFO] Or run: newgrp docker")
-            return False
-        else:
-            print("[ERROR] Docker installation failed")
-            return False
+        print("[INFO] Docker not working, attempting to fix...")
+        
+        # Проверяем, установлен ли Docker
+        try:
+            subprocess.run(['docker', '--version'], check=True, capture_output=True)
+            print("[INFO] Docker is installed but not working")
+            
+            # Пробуем запустить Docker сервис
+            try:
+                subprocess.run(['sudo', 'systemctl', 'start', 'docker'], check=True)
+                time.sleep(2)
+                print("[INFO] Docker service started")
+            except:
+                print("[WARNING] Could not start Docker service")
+            
+            # Пробуем добавить пользователя в группу docker
+            try:
+                current_user = os.getenv('USER', 'root')
+                subprocess.run(['sudo', 'usermod', '-aG', 'docker', current_user], check=True)
+                print(f"[INFO] Added user {current_user} to docker group")
+                
+                # Пробуем использовать sudo для docker
+                try:
+                    subprocess.run(['sudo', 'docker', 'ps'], check=True, capture_output=True)
+                    print("[INFO] Docker works with sudo")
+                    
+                    # Создаем алиас для docker с sudo
+                    os.environ['DOCKER_CMD'] = 'sudo docker'
+                    return True
+                except:
+                    pass
+                
+            except:
+                print("[WARNING] Could not add user to docker group")
+            
+            # Если ничего не помогло, пробуем установить заново
+            print("[INFO] Attempting Docker reinstallation...")
+            if install_docker():
+                print("[INFO] Docker installation completed. Please restart the script to use Docker.")
+                print("[INFO] Or run: newgrp docker")
+                return False
+            else:
+                print("[ERROR] Docker installation failed")
+                return False
+                
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("[INFO] Docker not found, installing...")
+            if install_docker():
+                print("[INFO] Docker installation completed. Please restart the script to use Docker.")
+                print("[INFO] Or run: newgrp docker")
+                return False
+            else:
+                print("[ERROR] Docker installation failed")
+                return False
 
 def detect_gpu_vendor():
     """Определяет производителя GPU"""
