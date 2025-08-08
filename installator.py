@@ -143,7 +143,18 @@ def fix_docker_permissions():
                 return True
             else:
                 print(f"[WARNING] Docker still not accessible: {result.stderr}")
-                return False
+                # Пробуем с sudo как fallback
+                try:
+                    result = subprocess.run(['sudo', 'docker', 'ps'], capture_output=True, text=True, timeout=10)
+                    if result.returncode == 0:
+                        print("[INFO] Docker accessible with sudo")
+                        return True
+                    else:
+                        print(f"[WARNING] Docker not accessible even with sudo: {result.stderr}")
+                        return False
+                except Exception as e:
+                    print(f"[WARNING] Docker sudo test failed: {e}")
+                    return False
         except Exception as e:
             print(f"[WARNING] Docker test failed: {e}")
             return False
@@ -3115,7 +3126,16 @@ CMD ["/usr/sbin/sshd", "-D"]
             '.'
         ]
         
-        if not fix_docker_permissions():
+        # Проверяем права Docker
+        use_sudo = False
+        try:
+            result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                use_sudo = True
+        except:
+            use_sudo = True
+        
+        if use_sudo:
             build_cmd = ['sudo'] + build_cmd
         
         print(f"[INFO] Building Docker image: {' '.join(build_cmd)}")
@@ -3150,9 +3170,7 @@ CMD ["/usr/sbin/sshd", "-D"]
         print(f"[INFO] Starting container with command: {' '.join(cmd)}")
         
         # Проверяем права Docker перед запуском
-        if not fix_docker_permissions():
-            print("[ERROR] Docker permissions not fixed, trying with sudo...")
-            # Пробуем с sudo как fallback
+        if use_sudo:
             cmd = ['sudo'] + cmd
         
         container_id = subprocess.check_output(cmd, timeout=60).decode().strip()
@@ -3171,7 +3189,7 @@ CMD ["/usr/sbin/sshd", "-D"]
         # Проверяем, что контейнер действительно запущен
         try:
             status_cmd = ['docker', 'ps', '--filter', f'name={container_name}', '--format', '{{.Status}}']
-            if 'sudo' in cmd[0]:
+            if use_sudo:
                 status_cmd = ['sudo'] + status_cmd[1:]
             
             status = subprocess.check_output(status_cmd, timeout=10).decode().strip()
@@ -3318,8 +3336,8 @@ def poll_for_tasks(agent_id, secret_key):
                     
                     # Проверяем права Docker перед запуском контейнера
                     if not fix_docker_permissions():
-                        print("[ERROR] Docker permissions not available, cannot start container")
-                        continue
+                        print("[ERROR] Docker permissions not available, trying with sudo...")
+                        # Продолжаем, но будем использовать sudo
                     
                     container_info = run_docker_container(task)
                     if container_info:
