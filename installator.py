@@ -828,13 +828,25 @@ def get_cpu_info():
                         cpu_freq = psutil.cpu_freq()
                         freq = cpu_freq.max / 1000 if cpu_freq else None
                     
-                    cpu_info.append({
-                        "model": model,
-                        "cores": cores,
-                        "threads": threads,
-                        "freq_ghz": round(freq, 2) if freq else None,
-                        "count": 1
-                    })
+                    # Проверяем, не добавляли ли мы уже такой CPU
+                    existing_cpu = next((cpu for cpu in cpu_info if cpu["model"] == model), None)
+                    if existing_cpu:
+                        # Если CPU уже существует, обновляем информацию
+                        existing_cpu["count"] += 1
+                        # Обновляем общее количество ядер и потоков
+                        existing_cpu["cores"] += cores
+                        existing_cpu["threads"] += threads
+                        # Обновляем частоту (берем максимальную)
+                        if freq and (existing_cpu["freq_ghz"] is None or freq > existing_cpu["freq_ghz"]):
+                            existing_cpu["freq_ghz"] = round(freq, 2)
+                    else:
+                        cpu_info.append({
+                            "model": model,
+                            "cores": cores,
+                            "threads": threads,
+                            "freq_ghz": round(freq, 2) if freq else None,
+                            "count": 1
+                        })
             except Exception as e:
                 print(f"[WARNING] CPU info error: {e}")
                 # Fallback к базовой информации
@@ -1736,8 +1748,53 @@ def get_disk_info():
                 except Exception as e2:
                     print(f"[WARNING] /proc/partitions also failed: {e2}")
                     pass
+                
+                # Дополнительный fallback - попробуем через df
+                if not disks:
+                    try:
+                        df_output = subprocess.check_output(['df', '-h', '/'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                        lines = df_output.strip().split('\n')
+                        if len(lines) > 1:
+                            parts = lines[1].split()
+                            if len(parts) >= 2:
+                                size_str = parts[1]
+                                # Парсим размер (например, "500G", "1T")
+                                size_gb = None
+                                if 'G' in size_str:
+                                    size_gb = float(size_str.replace('G', ''))
+                                elif 'T' in size_str:
+                                    size_gb = float(size_str.replace('T', '')) * 1024
+                                elif 'M' in size_str:
+                                    size_gb = float(size_str.replace('M', '')) / 1024
+                                
+                                if size_gb:
+                                    disks.append({
+                                        "model": "System Disk",
+                                        "type": "Unknown",
+                                        "size_gb": size_gb,
+                                        "read_speed_mb_s": None,
+                                        "write_speed_mb_s": None
+                                    })
+                    except Exception as e3:
+                        print(f"[WARNING] df fallback also failed: {e3}")
+                        # Последний fallback - добавляем базовый диск
+                        disks.append({
+                            "model": "Unknown Disk",
+                            "type": "Unknown",
+                            "size_gb": 100,  # Примерный размер
+                            "read_speed_mb_s": None,
+                            "write_speed_mb_s": None
+                        })
     except Exception as e:
         print(f"[ERROR] Disk info failed: {e}")
+        # В случае полной ошибки добавляем базовый диск
+        disks.append({
+            "model": "Unknown Disk",
+            "type": "Unknown",
+            "size_gb": 100,
+            "read_speed_mb_s": None,
+            "write_speed_mb_s": None
+        })
     return disks
 
 # Универсальная функция для сетей
@@ -1791,8 +1848,8 @@ def get_network_info():
                             if len(parts) >= 2:
                                 iface_name = parts[1].strip()
                                 
-                                # Пропускаем loopback интерфейсы
-                                if iface_name == 'lo':
+                                # Пропускаем loopback и виртуальные интерфейсы
+                                if iface_name == 'lo' or iface_name.startswith('virbr') or iface_name.startswith('docker') or iface_name.startswith('veth'):
                                     continue
                                 
                                 # Получаем реальную скорость интерфейса
@@ -2377,7 +2434,11 @@ def get_gpu_usage():
                         usage_str = parts[1].strip()
                         usage_match = re.search(r'(\d+)', usage_str)
                         if usage_match:
-                            gpu_usage[gpu_name] = int(usage_match.group(1))
+                            # Если GPU с таким именем уже есть, суммируем использование
+                            if gpu_name in gpu_usage:
+                                gpu_usage[gpu_name] = max(gpu_usage[gpu_name], int(usage_match.group(1)))
+                            else:
+                                gpu_usage[gpu_name] = int(usage_match.group(1))
         except:
             pass
         
