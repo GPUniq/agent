@@ -35,30 +35,93 @@ def install_and_import(package):
     except Exception as e:
         print(f"[WARNING] Failed to import {package}: {e}")
         if package == "psutil":
-            print("[INFO] Trying to fix psutil installation...")
-            try:
-                # Удаляем системную версию и устанавливаем заново
-                print("[INFO] Removing system psutil...")
-                subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "psutil"], capture_output=True)
-                subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "python3-psutil"], capture_output=True)
+            print("[INFO] psutil has issues, using fallback...")
+            # Создаем заглушку для psutil
+            class PsutilStub:
+                def cpu_percent(self): 
+                    try:
+                        with open('/proc/loadavg', 'r') as f:
+                            load = float(f.read().split()[0])
+                            return min(load * 25, 100)
+                    except:
+                        return 0
                 
-                # Очищаем кэш
-                print("[INFO] Clearing pip cache...")
-                subprocess.run([sys.executable, "-m", "pip", "cache", "purge"], capture_output=True)
+                def virtual_memory(self): 
+                    class Mem:
+                        def __init__(self): 
+                            try:
+                                with open('/proc/meminfo', 'r') as f:
+                                    meminfo = f.read()
+                                    total_match = re.search(r'MemTotal:\s+(\d+)', meminfo)
+                                    free_match = re.search(r'MemAvailable:\s+(\d+)', meminfo)
+                                    if total_match and free_match:
+                                        total = int(total_match.group(1))
+                                        free = int(free_match.group(1))
+                                        self.percent = ((total - free) / total) * 100
+                                    else:
+                                        self.percent = 0
+                            except:
+                                self.percent = 0
+                    return Mem()
                 
-                # Устанавливаем заново
-                print("[INFO] Installing psutil fresh...")
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--force-reinstall", "--no-cache-dir", "psutil"])
+                def disk_partitions(self): 
+                    try:
+                        partitions = []
+                        with open('/proc/mounts', 'r') as f:
+                            for line in f:
+                                parts = line.split()
+                                if len(parts) >= 2:
+                                    mountpoint = parts[1]
+                                    if mountpoint.startswith('/') and not mountpoint.startswith('/proc'):
+                                        partitions.append(type('Partition', (), {'mountpoint': mountpoint})())
+                        return partitions
+                    except:
+                        return []
                 
-                # Проверяем установку
-                globals()[package] = importlib.import_module(package)
-                print("[INFO] psutil fixed successfully!")
-            except Exception as fix_error:
-                print(f"[ERROR] Cannot fix psutil: {fix_error}")
-                print("[INFO] Please run these commands manually:")
-                print("sudo apt-get remove -y python3-psutil")
-                print("pip3 install --user --force-reinstall psutil")
-                sys.exit(1)
+                def disk_usage(self, path): 
+                    class Disk:
+                        def __init__(self): 
+                            try:
+                                result = subprocess.run(['df', path], capture_output=True, text=True)
+                                if result.returncode == 0:
+                                    lines = result.stdout.strip().split('\n')
+                                    if len(lines) > 1:
+                                        parts = lines[1].split()
+                                        if len(parts) >= 5:
+                                            used_percent = int(parts[4].rstrip('%'))
+                                            self.percent = used_percent
+                                        else:
+                                            self.percent = 0
+                                    else:
+                                        self.percent = 0
+                                else:
+                                    self.percent = 0
+                            except:
+                                self.percent = 0
+                    return Disk()
+                
+                def net_io_counters(self, pernic=False): 
+                    class Net:
+                        def __init__(self): 
+                            try:
+                                with open('/proc/net/dev', 'r') as f:
+                                    lines = f.readlines()[2:]
+                                    total_sent = 0
+                                    total_recv = 0
+                                    for line in lines:
+                                        parts = line.split()
+                                        if len(parts) >= 10:
+                                            total_recv += int(parts[1])
+                                            total_sent += int(parts[9])
+                                    self.bytes_sent = total_sent
+                                    self.bytes_recv = total_recv
+                            except:
+                                self.bytes_sent = 0
+                                self.bytes_recv = 0
+                    return Net()
+            
+            globals()[package] = PsutilStub()
+            print("[INFO] Using psutil fallback")
 
 # Устанавливаем пакеты
 for pkg in REQUIRED_PACKAGES:
