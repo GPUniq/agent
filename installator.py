@@ -1766,14 +1766,33 @@ def get_disk_info():
                         print(f"[DEBUG] Processing disk: {parts}")
                         if len(parts) >= 4:
                             name = parts[0]
-                            model = parts[1] if parts[1] != '-' else "Unknown"
-                            size_str = parts[2]
-                            dtype = parts[3]
+                            
+                            # Определяем размер и тип - они всегда в конце
+                            dtype = parts[-1]  # Последний элемент - это TYPE
+                            
+                            # Ищем размер - это будет элемент с единицами измерения (G, T, M, K)
+                            size_str = None
+                            model_parts = []
+                            
+                            for i, part in enumerate(parts[1:-1]):  # Пропускаем первый (NAME) и последний (TYPE)
+                                if any(unit in part.upper() for unit in ['G', 'T', 'M', 'K']) and any(char.isdigit() for char in part):
+                                    size_str = part
+                                    # Все элементы до размера - это модель
+                                    model_parts = parts[1:i+1]
+                                    break
+                            
+                            # Если размер не найден, попробуем найти его в конце перед TYPE
+                            if size_str is None and len(parts) >= 5:
+                                size_str = parts[-2]  # Предпоследний элемент
+                                model_parts = parts[1:-2]  # Все между NAME и SIZE
                             
                             # Проверяем, что размер не содержит неожиданные значения
                             if size_str in ['-', 'Unknown', 'LEGEND'] or not size_str:
                                 print(f"[INFO] Skipping disk with invalid size: '{size_str}'")
                                 continue
+                            
+                            # Объединяем части модели
+                            model = ' '.join(model_parts) if model_parts else "Unknown"
                             
                             # Дополнительная проверка на наличие неожиданных символов
                             if any(char.isalpha() and char.upper() not in ['G', 'T', 'M', 'K', 'I', 'B'] for char in size_str):
