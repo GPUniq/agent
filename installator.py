@@ -1021,7 +1021,7 @@ def get_gpu_info():
                                         else:
                                             # Если не нашли в driver version, попробуем получить через nvidia-smi
                                             try:
-                                                cuda_output = subprocess.check_output(['nvidia-smi', '-i', str(gpu_index)], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                                                cuda_output = subprocess.check_output(['nvidia-smi'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                                 cuda_match = re.search(r'CUDA Version:\s+(\d+\.\d+)', cuda_output)
                                                 if cuda_match:
                                                     cuda_version = cuda_match.group(1)
@@ -1030,12 +1030,16 @@ def get_gpu_info():
                                         # Получаем количество CUDA ядер через nvidia-smi для конкретной GPU
                                         try:
                                              # Попробуем получить количество CUDA ядер напрямую для конкретной GPU
-                                             cuda_cores_output = subprocess.check_output(['nvidia-smi', '--query-gpu=compute_cap,sm_count', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                                             # Попробуем получить общую информацию для всех GPU, а затем найдем нужную
+                                             cuda_cores_output = subprocess.check_output(['nvidia-smi', '--query-gpu=compute_cap,sm_count', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                              if cuda_cores_output.strip():
-                                                 parts = cuda_cores_output.strip().split(',')
-                                                 if len(parts) >= 2:
-                                                     compute_cap = parts[0].strip()
-                                                     sm_count = int(parts[1].strip())
+                                                 # Получаем информацию для всех GPU и находим нужную
+                                                 gpu_lines = cuda_cores_output.strip().split('\n')
+                                                 if gpu_index < len(gpu_lines):
+                                                     parts = gpu_lines[gpu_index].strip().split(',')
+                                                     if len(parts) >= 2:
+                                                         compute_cap = parts[0].strip()
+                                                         sm_count = int(parts[1].strip())
                                                      
                                                      # Определяем количество CUDA ядер на основе SM count и compute capability
                                                      if '9.0' in compute_cap:  # Blackwell (RTX 5090)
@@ -1080,14 +1084,17 @@ def get_gpu_info():
                                         # Получаем информацию о памяти и производительности для конкретной GPU
                                         try:
                                             # Получаем memory clock и bus width для расчета bandwidth
-                                            memory_info = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.clock,memory.bus_width', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                                            memory_info = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.clock,memory.bus_width', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                             if memory_info.strip():
-                                                parts = memory_info.strip().split(',')
-                                                if len(parts) >= 2:
-                                                    memory_clock_mhz = float(parts[0].strip())
-                                                    bus_width = int(parts[1].strip())
-                                                    # Рассчитываем bandwidth: (memory_clock * 2 * bus_width) / 8
-                                                    bandwidth_gbps = (memory_clock_mhz * 2 * bus_width) / 8000
+                                                # Получаем информацию для всех GPU и находим нужную
+                                                gpu_lines = memory_info.strip().split('\n')
+                                                if gpu_index < len(gpu_lines):
+                                                    parts = gpu_lines[gpu_index].strip().split(',')
+                                                    if len(parts) >= 2:
+                                                        memory_clock_mhz = float(parts[0].strip())
+                                                        bus_width = int(parts[1].strip())
+                                                        # Рассчитываем bandwidth: (memory_clock * 2 * bus_width) / 8
+                                                        bandwidth_gbps = (memory_clock_mhz * 2 * bus_width) / 8000
                                         except subprocess.TimeoutExpired:
                                             print(f"[WARNING] Timeout getting memory info for GPU {gpu_index}")
                                         except Exception as e:
@@ -1123,11 +1130,14 @@ def get_gpu_info():
                                         # Получаем TFLOPS через nvidia-smi для конкретной GPU
                                         try:
                                             # Попробуем получить через nvidia-smi --query-gpu=clocks.current.graphics
-                                            clock_info = subprocess.check_output(['nvidia-smi', '--query-gpu=clocks.current.graphics', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                                            clock_info = subprocess.check_output(['nvidia-smi', '--query-gpu=clocks.current.graphics', '--format=csv,noheader'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                             if clock_info.strip() and cuda_cores:
-                                                graphics_clock_mhz = float(clock_info.strip())
-                                                # Оценка TFLOPS: (cuda_cores * graphics_clock * 2) / 1000000
-                                                tflops = (cuda_cores * graphics_clock_mhz * 2) / 1000000
+                                                # Получаем информацию для всех GPU и находим нужную
+                                                gpu_lines = clock_info.strip().split('\n')
+                                                if gpu_index < len(gpu_lines):
+                                                    graphics_clock_mhz = float(gpu_lines[gpu_index].strip())
+                                                    # Оценка TFLOPS: (cuda_cores * graphics_clock * 2) / 1000000
+                                                    tflops = (cuda_cores * graphics_clock_mhz * 2) / 1000000
                                         except subprocess.TimeoutExpired:
                                             print(f"[WARNING] Timeout getting clock info for GPU {gpu_index}")
                                         except Exception as e:
