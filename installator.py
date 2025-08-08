@@ -748,25 +748,27 @@ def get_gpu_info():
                         "count": 1
                     })
         elif system == "Linux":
-            # Улучшенное определение GPU для Linux
+            # Улучшенное определение GPU для Linux с поддержкой множественных GPU
             try:
                 # Сначала попробуем nvidia-smi для NVIDIA GPU
                 nvidia_output = subprocess.check_output(['nvidia-smi', '-L'], stderr=subprocess.DEVNULL).decode(errors='ignore')
                 for line in nvidia_output.strip().split('\n'):
                     if line:
                         # Парсим строку вида "GPU 0: NVIDIA GeForce RTX 3080 (UUID: ...)"
-                        match = re.search(r'GPU \d+: (.+?) \(UUID:', line)
+                        match = re.search(r'GPU (\d+): (.+?) \(UUID:', line)
                         if match:
-                            model = match.group(1).strip()
+                            gpu_index = int(match.group(1))
+                            model = match.group(2).strip()
                             
-                            # Получаем дополнительную информацию через nvidia-smi
+                            # Получаем дополнительную информацию для КОНКРЕТНОЙ GPU
                             vram_gb = None
                             cuda_version = None
                             cuda_cores = None
                             tflops = None
                             bandwidth_gbps = None
                             try:
-                                nvidia_detailed = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.total,driver_version', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                # Получаем информацию для конкретной GPU по индексу
+                                nvidia_detailed = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.total,driver_version', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL).decode(errors='ignore')
                                 if nvidia_detailed.strip():
                                     parts = nvidia_detailed.strip().split(',')
                                     if len(parts) >= 2:
@@ -791,16 +793,16 @@ def get_gpu_info():
                                         else:
                                             # Если не нашли в driver version, попробуем получить через nvidia-smi
                                             try:
-                                                cuda_output = subprocess.check_output(['nvidia-smi'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                                cuda_output = subprocess.check_output(['nvidia-smi', '-i', str(gpu_index)], stderr=subprocess.DEVNULL).decode(errors='ignore')
                                                 cuda_match = re.search(r'CUDA Version:\s+(\d+\.\d+)', cuda_output)
                                                 if cuda_match:
                                                     cuda_version = cuda_match.group(1)
                                             except:
                                                 pass
-                                        # Получаем количество CUDA ядер через nvidia-smi
+                                        # Получаем количество CUDA ядер через nvidia-smi для конкретной GPU
                                         try:
-                                             # Попробуем получить количество CUDA ядер напрямую
-                                             cuda_cores_output = subprocess.check_output(['nvidia-smi', '--query-gpu=compute_cap,sm_count', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                             # Попробуем получить количество CUDA ядер напрямую для конкретной GPU
+                                             cuda_cores_output = subprocess.check_output(['nvidia-smi', '--query-gpu=compute_cap,sm_count', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL).decode(errors='ignore')
                                              if cuda_cores_output.strip():
                                                  parts = cuda_cores_output.strip().split(',')
                                                  if len(parts) >= 2:
@@ -826,18 +828,12 @@ def get_gpu_info():
                                                              else:  # Младшие модели
                                                                  cuda_cores = vram_gb * 600
                                         except:
-                                            # Fallback: попробуем получить через nvidia-settings
-                                            try:
-                                                nvidia_settings = subprocess.check_output(['nvidia-settings', '-q', 'GPUUtilization'], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                                                # Если nvidia-settings доступен, можем получить дополнительную информацию
-                                                pass
-                                            except:
-                                                pass
+                                            pass
                                         
-                                        # Получаем информацию о памяти и производительности
+                                        # Получаем информацию о памяти и производительности для конкретной GPU
                                         try:
                                             # Получаем memory clock и bus width для расчета bandwidth
-                                            memory_info = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.clock,memory.bus_width', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                            memory_info = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.clock,memory.bus_width', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL).decode(errors='ignore')
                                             if memory_info.strip():
                                                 parts = memory_info.strip().split(',')
                                                 if len(parts) >= 2:
@@ -848,10 +844,10 @@ def get_gpu_info():
                                         except:
                                             pass
                                         
-                                        # Получаем TFLOPS через nvidia-smi (если доступно)
+                                        # Получаем TFLOPS через nvidia-smi для конкретной GPU
                                         try:
                                             # Попробуем получить через nvidia-smi --query-gpu=clocks.current.graphics
-                                            clock_info = subprocess.check_output(['nvidia-smi', '--query-gpu=clocks.current.graphics', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                            clock_info = subprocess.check_output(['nvidia-smi', '--query-gpu=clocks.current.graphics', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL).decode(errors='ignore')
                                             if clock_info.strip() and cuda_cores:
                                                 graphics_clock_mhz = float(clock_info.strip())
                                                 # Оценка TFLOPS: (cuda_cores * graphics_clock * 2) / 1000000
@@ -874,7 +870,7 @@ def get_gpu_info():
             except:
                 pass
             
-            # Попробуем lspci для всех GPU
+            # Попробуем lspci для всех GPU (AMD, Intel, другие)
             try:
                 lspci_output = subprocess.check_output(['lspci', '-nn']).decode(errors='ignore')
                 for line in lspci_output.split('\n'):
@@ -989,40 +985,40 @@ def get_gpu_info():
                                 
                                 # Получаем информацию о производительности AMD GPU через rocm-smi
                                 try:
-                                                                             # Попробуем получить информацию через rocm-smi
-                                         rocm_info = subprocess.check_output(['rocm-smi', '--showproductname', '--showclocks', '--showmeminfo', '--showcomputeunits'], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                                         if rocm_info.strip():
-                                             # Парсим информацию о памяти
-                                             mem_match = re.search(r'vram.*?(\d+)\s*MB', rocm_info, re.IGNORECASE)
-                                             if mem_match and not vram_gb:
-                                                 vram_mb = int(mem_match.group(1))
-                                                 vram_gb = vram_mb // 1024
-                                             
-                                             # Парсим количество compute units
-                                             cu_match = re.search(r'Compute Units:\s*(\d+)', rocm_info)
-                                             if cu_match:
-                                                 compute_units = int(cu_match.group(1))
-                                                 # Каждый compute unit содержит 64 stream processors в современных AMD GPU
-                                                 stream_processors = compute_units * 64
-                                             else:
-                                                 try:
-                                                     for i in range(10):
-                                                         try:
-                                                             with open(f'/sys/class/drm/card{i}/device/gpu_core_count', 'r') as f:
-                                                                 stream_processors = int(f.read().strip())
-                                                                 break
-                                                         except:
-                                                             continue
-                                                 except:
-                                                     stream_processors = None
-                                             
-                                             # Парсим информацию о частотах
-                                             clock_match = re.search(r'GPU.*?(\d+)\s*MHz', rocm_info)
-                                             if clock_match and stream_processors:
-                                                 gpu_clock_mhz = int(clock_match.group(1))
-                                                 # Универсальная формула TFLOPS для AMD GPU
-                                                 # 2 операции на такт для современных AMD GPU
-                                                 tflops = (gpu_clock_mhz * stream_processors * 2) / 1000000
+                                    # Попробуем получить информацию через rocm-smi
+                                    rocm_info = subprocess.check_output(['rocm-smi', '--showproductname', '--showclocks', '--showmeminfo', '--showcomputeunits'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                    if rocm_info.strip():
+                                        # Парсим информацию о памяти
+                                        mem_match = re.search(r'vram.*?(\d+)\s*MB', rocm_info, re.IGNORECASE)
+                                        if mem_match and not vram_gb:
+                                            vram_mb = int(mem_match.group(1))
+                                            vram_gb = vram_mb // 1024
+                                        
+                                        # Парсим количество compute units
+                                        cu_match = re.search(r'Compute Units:\s*(\d+)', rocm_info)
+                                        if cu_match:
+                                            compute_units = int(cu_match.group(1))
+                                            # Каждый compute unit содержит 64 stream processors в современных AMD GPU
+                                            stream_processors = compute_units * 64
+                                        else:
+                                            try:
+                                                for i in range(10):
+                                                    try:
+                                                        with open(f'/sys/class/drm/card{i}/device/gpu_core_count', 'r') as f:
+                                                            stream_processors = int(f.read().strip())
+                                                            break
+                                                    except:
+                                                        continue
+                                            except:
+                                                stream_processors = None
+                                        
+                                        # Парсим информацию о частотах
+                                        clock_match = re.search(r'GPU.*?(\d+)\s*MHz', rocm_info)
+                                        if clock_match and stream_processors:
+                                            gpu_clock_mhz = int(clock_match.group(1))
+                                            # Универсальная формула TFLOPS для AMD GPU
+                                            # 2 операции на такт для современных AMD GPU
+                                            tflops = (gpu_clock_mhz * stream_processors * 2) / 1000000
                                 except:
                                     pass
                                 
@@ -1054,14 +1050,8 @@ def get_gpu_info():
                                 # Для AMD GPU CUDA не поддерживается, но есть ROCm
                                 cuda_version = "ROCm supported"
                             
-                            # Проверяем, не добавили ли мы уже эту GPU
-                            already_added = False
-                            for gpu in gpus:
-                                if vendor in gpu["model"] and vendor != "Unknown":
-                                    already_added = True
-                                    break
-                            
-                            if not already_added and model != "Unknown" and len(model) > 3:
+                            # Добавляем GPU только если модель определена и не пустая
+                            if model != "Unknown" and len(model) > 3:
                                 gpus.append({
                                     "model": model,
                                     "vram_gb": vram_gb if vram_gb is not None else 0,  # Backend требует обязательное поле
