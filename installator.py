@@ -2639,6 +2639,86 @@ def send_init_to_server(agent_id, secret_key, data):
         print(f"[ERROR] Failed to send data: {e}")
         return None
 
+def get_cpu_temperature():
+    """Get CPU temperature in Celsius"""
+    system = platform.system()
+    temperature = None
+    
+    try:
+        if system == "Linux":
+            # Попробуем несколько методов для Linux
+            temperature_sources = [
+                "/sys/class/thermal/thermal_zone0/temp",
+                "/sys/class/hwmon/hwmon0/temp1_input",
+                "/sys/class/hwmon/hwmon1/temp1_input",
+                "/sys/class/hwmon/hwmon*/temp1_input",
+                "/proc/acpi/thermal_zone/THM0/temperature",
+                "/proc/acpi/thermal_zone/THM1/temperature"
+            ]
+            
+            for source in temperature_sources:
+                try:
+                    if '*' in source:
+                        # Для glob patterns
+                        import glob
+                        for file_path in glob.glob(source):
+                            with open(file_path, 'r') as f:
+                                temp_raw = f.read().strip()
+                                if temp_raw.isdigit():
+                                    temperature = int(temp_raw) / 1000.0  # Convert from millidegrees
+                                    break
+                    else:
+                        with open(source, 'r') as f:
+                            temp_raw = f.read().strip()
+                            if temp_raw.isdigit():
+                                temperature = int(temp_raw) / 1000.0  # Convert from millidegrees
+                                break
+                except:
+                    continue
+            
+            # Если не удалось через файлы, попробуем через sensors
+            if temperature is None:
+                try:
+                    sensors_output = subprocess.check_output(['sensors'], stderr=subprocess.DEVNULL, timeout=10).decode(errors='ignore')
+                    # Ищем температуру CPU
+                    temp_match = re.search(r'Core 0:\s*\+(\d+(?:\.\d+)?)°C', sensors_output)
+                    if temp_match:
+                        temperature = float(temp_match.group(1))
+                    else:
+                        # Попробуем найти любую температуру CPU
+                        temp_match = re.search(r'CPU.*\+(\d+(?:\.\d+)?)°C', sensors_output)
+                        if temp_match:
+                            temperature = float(temp_match.group(1))
+                except:
+                    pass
+                    
+        elif system == "Darwin":
+            # Для macOS используем powermetrics
+            try:
+                powermetrics_output = subprocess.check_output(['sudo', 'powermetrics', '-n', '1', '-i', '1000'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
+                temp_match = re.search(r'CPU die temperature: (\d+(?:\.\d+)?)', powermetrics_output)
+                if temp_match:
+                    temperature = float(temp_match.group(1))
+            except:
+                pass
+                
+        elif system == "Windows":
+            # Для Windows используем wmic
+            try:
+                wmic_output = subprocess.check_output(['wmic', '/namespace:\\\\root\\wmi', 'path', 'MSAcpi_ThermalZoneTemperature', 'get', 'CurrentTemperature'], shell=True).decode(errors='ignore')
+                temp_match = re.search(r'(\d+)', wmic_output)
+                if temp_match:
+                    # Windows возвращает температуру в десятых градуса Кельвина
+                    temp_kelvin = int(temp_match.group(1)) / 10.0
+                    temperature = temp_kelvin - 273.15  # Convert to Celsius
+            except:
+                pass
+                
+    except Exception as e:
+        print(f"[WARNING] Failed to get CPU temperature: {e}")
+    
+    return temperature
+
 def get_network_usage():
     usage = {}
     system = platform.system()
@@ -3193,6 +3273,16 @@ if __name__ == "__main__":
         print(f"[WARNING] Failed to get network usage: {e}")
         network_usage = {}
     
+    try:
+        cpu_temperature = get_cpu_temperature()
+        if cpu_temperature is not None:
+            print(f"[INFO] CPU temperature: {cpu_temperature}°C")
+        else:
+            print(f"[INFO] CPU temperature: not available")
+    except Exception as e:
+        print(f"[WARNING] Failed to get CPU temperature: {e}")
+        cpu_temperature = None
+    
     data = {
         **system_info,
         "location": location,
@@ -3202,6 +3292,7 @@ if __name__ == "__main__":
         "gpu_usage": gpu_usage,  # Теперь это число, а не словарь
         "disk_usage": disk_usage,
         "network_usage": network_usage,
+        "cpu_temperature": cpu_temperature,
     }
     print(json.dumps(data, indent=2, ensure_ascii=False))
     
