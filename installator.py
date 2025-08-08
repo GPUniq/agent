@@ -10,6 +10,7 @@ import re
 import threading
 import time
 import os
+import json
 
 AGENT_ID_FILE = ".agent_id"
 
@@ -99,6 +100,95 @@ class PsutilStub:
                     self.bytes_sent = 0
                     self.bytes_recv = 0
         return Net()
+
+def fix_docker_permissions():
+    """Исправляет права доступа к Docker daemon"""
+    try:
+        print("[INFO] Checking Docker permissions...")
+        
+        # Проверяем, работает ли Docker без sudo
+        try:
+            result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                print("[INFO] Docker permissions are OK")
+                return True
+        except:
+            pass
+        
+        # Пытаемся исправить права
+        print("[INFO] Fixing Docker permissions...")
+        
+        # Добавляем текущего пользователя в группу docker
+        try:
+            current_user = subprocess.check_output(['whoami']).decode().strip()
+            subprocess.run(['sudo', 'usermod', '-aG', 'docker', current_user], check=True)
+            print(f"[INFO] Added user {current_user} to docker group")
+        except Exception as e:
+            print(f"[WARNING] Failed to add user to docker group: {e}")
+        
+        # Перезапускаем Docker service
+        try:
+            subprocess.run(['sudo', 'systemctl', 'restart', 'docker'], check=True)
+            print("[INFO] Docker service restarted")
+        except Exception as e:
+            print(f"[WARNING] Failed to restart Docker service: {e}")
+        
+        # Ждем немного и проверяем снова
+        time.sleep(3)
+        
+        try:
+            result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                print("[INFO] Docker permissions fixed successfully")
+                return True
+            else:
+                print(f"[WARNING] Docker still not accessible: {result.stderr}")
+                return False
+        except Exception as e:
+            print(f"[WARNING] Docker test failed: {e}")
+            return False
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to fix Docker permissions: {e}")
+        return False
+
+def get_available_resources():
+    """Получает информацию о доступных ресурсах системы"""
+    try:
+        # CPU
+        cpu_count = psutil.cpu_count(logical=True)
+        cpu_percent = psutil.cpu_percent(interval=1)
+        
+        # RAM
+        memory = psutil.virtual_memory()
+        total_ram_gb = memory.total / (1024**3)
+        available_ram_gb = memory.available / (1024**3)
+        
+        # GPU (если есть)
+        gpu_count = 0
+        try:
+            gpu_info = get_gpu_info()
+            gpu_count = len(gpu_info) if gpu_info else 0
+        except:
+            pass
+        
+        # Disk
+        disk_usage = psutil.disk_usage('/')
+        total_disk_gb = disk_usage.total / (1024**3)
+        available_disk_gb = disk_usage.free / (1024**3)
+        
+        return {
+            'cpu_count': cpu_count,
+            'cpu_usage_percent': cpu_percent,
+            'total_ram_gb': total_ram_gb,
+            'available_ram_gb': available_ram_gb,
+            'gpu_count': gpu_count,
+            'total_disk_gb': total_disk_gb,
+            'available_disk_gb': available_disk_gb
+        }
+    except Exception as e:
+        print(f"[ERROR] Failed to get available resources: {e}")
+        return None
 
 def install_and_import(package):
     try:
@@ -2939,11 +3029,19 @@ def wait_for_ssh_ready(host, port, timeout=60):
 
 def run_docker_container(task):
     import subprocess
+    
+    # Получаем доступные ресурсы системы
+    available_resources = get_available_resources()
+    if not available_resources:
+        print("[ERROR] Failed to get available resources")
+        return None
+    
+    print(f"[INFO] Available resources: {json.dumps(available_resources, indent=2)}")
+    
     docker_image = task.get('docker_image')
-    ram = task.get('ram_allocated')
-    storage = task.get('storage_allocated')
-    gpus = task.get('gpus_allocated')
-    cpus = task.get('cpus_allocated')
+    if not docker_image:
+        print("[ERROR] No docker_image specified in task")
+        return None
     
     # Получаем свободный порт для SSH
     ssh_port = get_available_port()
@@ -2954,27 +3052,60 @@ def run_docker_container(task):
     task_id = task.get('id', int(time.time()))
     container_name = f"task_{task_id}"
     
-    # Собираем docker run команду
+    # Рассчитываем 95% от доступных ресурсов
+    # CPU: 95% от доступных ядер
+    cpu_limit = max(1, int(available_resources['cpu_count'] * 0.95))
+    
+    # RAM: 95% от доступной памяти (но минимум 1GB)
+    ram_limit_gb = max(1, int(available_resources['available_ram_gb'] * 0.95))
+    
+    # GPU: все доступные GPU
+    gpu_limit = available_resources['gpu_count']
+    
+    # Storage: 95% от доступного места на диске
+    storage_limit_gb = max(10, int(available_resources['available_disk_gb'] * 0.95))
+    
+    print(f"[INFO] Allocating resources for container:")
+    print(f"  CPU: {cpu_limit} cores")
+    print(f"  RAM: {ram_limit_gb}GB")
+    print(f"  GPU: {gpu_limit} GPUs")
+    print(f"  Storage: {storage_limit_gb}GB")
+    
+    # Собираем docker run команду с оптимальными настройками
     cmd = [
         'docker', 'run', '-d', '--rm',
         '--name', container_name,
         '-p', f'{ssh_port}:22',  # Пробрасываем порт для ssh
+        '--memory', f'{ram_limit_gb}g',
+        '--cpus', str(cpu_limit),
+        '--shm-size', '2g',  # Увеличиваем shared memory для лучшей производительности
     ]
-    if ram:
-        cmd += ['--memory', f'{ram}g']
-    if cpus:
-        cpu_count = cpus.get('count', 1) if isinstance(cpus, dict) else cpus
-        cmd += ['--cpus', str(cpu_count)]
-    if gpus:
+    
+    # Добавляем GPU если есть
+    if gpu_limit > 0:
         cmd += ['--gpus', 'all']
-    if storage:
-        # Можно добавить volume, если нужно
-        pass
+        print(f"[INFO] GPU access enabled for {gpu_limit} GPUs")
+    
+    # Добавляем volume для хранения данных
+    cmd += ['-v', f'/tmp/{container_name}_data:/data']
+    
+    # Добавляем сетевые настройки для лучшей производительности
+    cmd += ['--network', 'host']  # Используем host network для лучшей производительности
+    
+    # Добавляем образ
     cmd += [docker_image]
     
     try:
         print(f"[INFO] Starting container with command: {' '.join(cmd)}")
-        container_id = subprocess.check_output(cmd).decode().strip()
+        
+        # Проверяем права Docker перед запуском
+        if not fix_docker_permissions():
+            print("[ERROR] Docker permissions not fixed, trying with sudo...")
+            # Пробуем с sudo как fallback
+            cmd = ['sudo'] + cmd
+        
+        container_id = subprocess.check_output(cmd, timeout=60).decode().strip()
+        print(f"[INFO] Container started with ID: {container_id}")
         
         # Ждем, пока SSH сервис будет готов
         print(f"[INFO] Waiting for SSH service to be ready on port {ssh_port}...")
@@ -2986,14 +3117,37 @@ def run_docker_container(task):
         # Получаем IP адрес хоста для подключения
         host_ip = get_ip_address() or 'localhost'
         
+        # Проверяем, что контейнер действительно запущен
+        try:
+            status_cmd = ['docker', 'ps', '--filter', f'name={container_name}', '--format', '{{.Status}}']
+            if 'sudo' in cmd[0]:
+                status_cmd = ['sudo'] + status_cmd[1:]
+            
+            status = subprocess.check_output(status_cmd, timeout=10).decode().strip()
+            if not status:
+                print("[ERROR] Container not found in running containers")
+                return None
+            print(f"[INFO] Container status: {status}")
+        except Exception as e:
+            print(f"[WARNING] Failed to check container status: {e}")
+        
         return {
             'container_id': container_id,
             'container_name': container_name,
             'ssh_port': ssh_port,
             'ssh_host': host_ip,
             'ssh_command': f"ssh -p {ssh_port} root@{host_ip}",
-            'status': 'running'
+            'status': 'running',
+            'allocated_resources': {
+                'cpu_cores': cpu_limit,
+                'ram_gb': ram_limit_gb,
+                'gpu_count': gpu_limit,
+                'storage_gb': storage_limit_gb
+            }
         }
+    except subprocess.TimeoutExpired:
+        print("[ERROR] Docker run command timed out")
+        return None
     except Exception as e:
         print(f"[ERROR] Docker run failed: {e}")
         return None
@@ -3026,8 +3180,14 @@ def list_running_containers():
     """Получает список запущенных контейнеров"""
     import subprocess
     try:
-        cmd = ['docker', 'ps', '--format', '{{.Names}}\t{{.Status}}\t{{.Ports}}']
-        result = subprocess.check_output(cmd).decode().strip()
+        # Проверяем права Docker
+        if not fix_docker_permissions():
+            print("[WARNING] Using sudo for listing containers...")
+            cmd = ['sudo', 'docker', 'ps', '--format', '{{.Names}}\t{{.Status}}\t{{.Ports}}']
+        else:
+            cmd = ['docker', 'ps', '--format', '{{.Names}}\t{{.Status}}\t{{.Ports}}']
+        
+        result = subprocess.check_output(cmd, timeout=10).decode().strip()
         containers = []
         for line in result.split('\n'):
             if line.strip():
@@ -3039,6 +3199,9 @@ def list_running_containers():
                         'ports': parts[2]
                     })
         return containers
+    except subprocess.TimeoutExpired:
+        print("[WARNING] List containers command timed out")
+        return []
     except Exception as e:
         print(f"[ERROR] Failed to list containers: {e}")
         return []
@@ -3047,9 +3210,17 @@ def cleanup_stopped_containers():
     """Удаляет остановленные контейнеры"""
     import subprocess
     try:
-        cmd = ['docker', 'container', 'prune', '-f']
-        subprocess.run(cmd, check=True)
+        # Проверяем права Docker
+        if not fix_docker_permissions():
+            print("[WARNING] Using sudo for cleanup...")
+            cmd = ['sudo', 'docker', 'container', 'prune', '-f']
+        else:
+            cmd = ['docker', 'container', 'prune', '-f']
+        
+        subprocess.run(cmd, check=True, timeout=30)
         print("[INFO] Cleaned up stopped containers")
+    except subprocess.TimeoutExpired:
+        print("[WARNING] Cleanup command timed out")
     except Exception as e:
         print(f"[ERROR] Failed to cleanup containers: {e}")
 
@@ -3070,34 +3241,67 @@ def poll_for_tasks(agent_id, secret_key):
         "Content-Type": "application/json",
         "X-Agent-Secret-Key": secret_key
     }
+    
+    consecutive_errors = 0
+    max_consecutive_errors = 5
+    
     while True:
         try:
-            response = requests.post(url, headers=headers, timeout=10)
+            print(f"[DEBUG] Polling for tasks from {url}")
+            response = requests.post(url, headers=headers, timeout=15)
+            
             if response.status_code == 200:
                 resp_json = response.json()
                 task = resp_json.get('data')
+                
                 if task and task.get('task_id') is not None and task.get('task_data') is not None:
                     print(f"[INFO] New task received: {task}")
+                    
+                    # Проверяем права Docker перед запуском контейнера
+                    if not fix_docker_permissions():
+                        print("[ERROR] Docker permissions not available, cannot start container")
+                        continue
+                    
                     container_info = run_docker_container(task)
                     if container_info:
-                        print(f"[INFO] Docker container started: {container_info['container_id']}")
-                        print(f"[INFO] SSH connection info:")
-                        print(f"  Host: {container_info['ssh_host']}")
-                        print(f"  Port: {container_info['ssh_port']}")
-                        print(f"  Command: {container_info['ssh_command']}")
-                        print(f"[INFO] Container is ready for SSH connection")
+                        print(f"[INFO] Docker container started successfully:")
+                        print(f"  Container ID: {container_info['container_id']}")
+                        print(f"  Container Name: {container_info['container_name']}")
+                        print(f"  SSH Host: {container_info['ssh_host']}")
+                        print(f"  SSH Port: {container_info['ssh_port']}")
+                        print(f"  SSH Command: {container_info['ssh_command']}")
+                        print(f"  Allocated Resources: {container_info.get('allocated_resources', 'N/A')}")
+                        
                         # Отправляем статус задачи обратно на сервер с информацией о SSH
                         send_task_status(agent_id, task.get('id'), secret_key, container_info)
+                        consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
                     else:
                         print(f"[ERROR] Failed to start container for task {task.get('id')}")
+                        consecutive_errors += 1
                 else:
                     print(f"[INFO] No valid task received: {task}")
+                    consecutive_errors = 0  # Сбрасываем счетчик ошибок
             else:
-                print(f"[INFO] No new task. Status: {response.status_code}")
-                print(f"[INFO] Server response body: {response.text}")
+                print(f"[WARNING] Server returned status {response.status_code}")
+                print(f"[DEBUG] Server response: {response.text}")
+                consecutive_errors += 1
+                
+        except requests.exceptions.Timeout:
+            print("[WARNING] Request timeout, retrying...")
+            consecutive_errors += 1
+        except requests.exceptions.ConnectionError:
+            print("[WARNING] Connection error, retrying...")
+            consecutive_errors += 1
         except Exception as e:
             print(f"[ERROR] Polling failed: {e}")
-        time.sleep(10)  # Пауза между запросами
+            consecutive_errors += 1
+        
+        # Если слишком много ошибок подряд, увеличиваем интервал
+        if consecutive_errors >= max_consecutive_errors:
+            print(f"[WARNING] Too many consecutive errors ({consecutive_errors}), increasing poll interval")
+            time.sleep(60)  # Увеличиваем интервал до 1 минуты
+        else:
+            time.sleep(10)  # Обычный интервал
 
 def send_task_status(agent_id, task_id, secret_key, container_info):
     url = f"{BASE_URL}/v1/agents/{agent_id}/tasks/{task_id}/status"
@@ -3202,6 +3406,16 @@ if __name__ == "__main__":
     if not check_and_install_docker():
         print("[ERROR] Docker is required but not available. Please install Docker and restart the script.")
         sys.exit(1)
+    
+    # Проверяем и исправляем права Docker
+    print("[INFO] Checking Docker permissions...")
+    if not fix_docker_permissions():
+        print("[WARNING] Docker permissions could not be fixed automatically.")
+        print("[WARNING] You may need to run: sudo usermod -aG docker $USER")
+        print("[WARNING] Then log out and log back in, or restart the system.")
+        print("[WARNING] Continuing anyway, but Docker operations may fail...")
+    else:
+        print("[INFO] Docker permissions are OK")
     
     # Проверяем и устанавливаем GPU драйверы
     print("[INFO] Checking GPU drivers...")
