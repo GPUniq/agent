@@ -1555,6 +1555,16 @@ def get_disk_info():
                             size_str = parts[2]
                             dtype = parts[3]
                             
+                            # Проверяем, что размер не содержит неожиданные значения
+                            if size_str in ['-', 'Unknown', 'LEGEND'] or not size_str:
+                                print(f"[INFO] Skipping disk with invalid size: '{size_str}'")
+                                continue
+                            
+                            # Дополнительная проверка на наличие неожиданных символов
+                            if any(char.isalpha() and char.upper() not in ['G', 'T', 'M', 'K', 'I', 'B'] for char in size_str):
+                                print(f"[INFO] Skipping disk size with unexpected characters: '{size_str}'")
+                                continue
+                            
                             # Улучшенный парсинг размера
                             size_gb = None
                             if size_str != '-':
@@ -1562,15 +1572,25 @@ def get_disk_info():
                                     # Убираем все пробелы
                                     size_str = size_str.strip()
                                     
-                                    if 'G' in size_str:
+                                    # Проверяем, что строка содержит валидные символы для размера
+                                    # Разрешаем форматы: 512G, 1.5T, 256M, 512K, 512GiB, 1.5TiB и т.д.
+                                    if not re.match(r'^[\d\.]+[GMTK]?[i]?[B]?$', size_str, re.IGNORECASE):
+                                        # Если строка не содержит валидные символы размера, пропускаем её
+                                        print(f"[INFO] Skipping invalid disk size format: '{size_str}'")
+                                        continue
+                                    
+                                    if 'G' in size_str.upper():
                                         # Пример: "512G", "512.5G"
-                                        size_gb = float(size_str.replace('G', ''))
-                                    elif 'T' in size_str:
+                                        size_gb = float(size_str.replace('G', '').replace('g', ''))
+                                    elif 'T' in size_str.upper():
                                         # Пример: "1T", "2.5T"
-                                        size_gb = float(size_str.replace('T', '')) * 1024
-                                    elif 'M' in size_str:
+                                        size_gb = float(size_str.replace('T', '').replace('t', '')) * 1024
+                                    elif 'M' in size_str.upper():
                                         # Пример: "512M"
-                                        size_gb = float(size_str.replace('M', '')) / 1024
+                                        size_gb = float(size_str.replace('M', '').replace('m', '')) / 1024
+                                    elif 'K' in size_str.upper():
+                                        # Пример: "512K"
+                                        size_gb = float(size_str.replace('K', '').replace('k', '')) / (1024 * 1024)
                                     elif size_str.isdigit():
                                         # Если это просто число, предполагаем что это байты
                                         size_bytes = int(size_str)
@@ -1580,14 +1600,17 @@ def get_disk_info():
                                         number_match = re.search(r'(\d+(?:\.\d+)?)', size_str)
                                         if number_match:
                                             number = float(number_match.group(1))
-                                            if 'T' in size_str:
+                                            if 'T' in size_str.upper():
                                                 size_gb = number * 1024
-                                            elif 'M' in size_str:
+                                            elif 'M' in size_str.upper():
                                                 size_gb = number / 1024
+                                            elif 'K' in size_str.upper():
+                                                size_gb = number / (1024 * 1024)
                                             else:
                                                 size_gb = number
                                 except Exception as e:
                                     print(f"[WARNING] Failed to parse disk size '{size_str}': {e}")
+                                    # Продолжаем обработку других дисков
                                     pass
                             
                             # Если не удалось получить размер через lsblk, попробуем другие методы
