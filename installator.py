@@ -1750,7 +1750,17 @@ def get_disk_info():
             try:
                 # Сначала попробуем простой lsblk
                 lsblk_output = subprocess.check_output(['lsblk', '-d', '-o', 'NAME,MODEL,SIZE,TYPE'], stderr=subprocess.DEVNULL).decode(errors='ignore')
-                for line in lsblk_output.split('\n')[1:]:  # Пропускаем заголовок
+                lines = lsblk_output.split('\n')
+                
+                # Находим индекс заголовка
+                header_index = -1
+                for i, line in enumerate(lines):
+                    if 'NAME' in line and 'MODEL' in line and 'SIZE' in line and 'TYPE' in line:
+                        header_index = i
+                        break
+                
+                # Обрабатываем строки после заголовка
+                for line in lines[header_index + 1:]:
                     if line.strip() and 'disk' in line:
                         parts = line.split()
                         if len(parts) >= 4:
@@ -2582,12 +2592,8 @@ def get_system_info():
         total_ram_gb, ram_type = 0, "unknown"
     
     print("[DEBUG] Getting hardware info...")
-    try:
-        hardware_info = get_hardware_info()
-        print("[DEBUG] Hardware info collected")
-    except Exception as e:
-        print(f"[WARNING] Failed to get hardware info: {e}")
-        hardware_info = {"cpus": [], "gpus": [], "disks": [], "networks": []}
+    hardware_info = get_hardware_info()
+    print("[DEBUG] Hardware info collected")
     
     return {
         "hostname": hostname,
