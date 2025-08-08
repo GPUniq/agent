@@ -858,27 +858,40 @@ def get_cpu_info():
                     "count": 1
                 })
         else:
+            # Для других систем (не Linux, не Windows, не Darwin)
             model = platform.processor()
-        cores = psutil.cpu_count(logical=False)
-        threads = psutil.cpu_count(logical=True)
-        freq = psutil.cpu_freq().max / 1000 if psutil.cpu_freq() else None
-        cpu_info.append({
-            "model": model,
-            "cores": cores,
-            "threads": threads,
-            "freq_ghz": round(freq, 2) if freq else None,
-            "count": 1
-        })
+            cores = psutil.cpu_count(logical=False)
+            threads = psutil.cpu_count(logical=True)
+            freq = psutil.cpu_freq().max / 1000 if psutil.cpu_freq() else None
+            
+            # Проверяем, не добавляли ли мы уже такой CPU
+            existing_cpu = next((cpu for cpu in cpu_info if cpu["model"] == model), None)
+            if existing_cpu:
+                # Если CPU уже существует, обновляем информацию
+                existing_cpu["count"] += 1
+                existing_cpu["cores"] += cores
+                existing_cpu["threads"] += threads
+                if freq and (existing_cpu["freq_ghz"] is None or freq > existing_cpu["freq_ghz"]):
+                    existing_cpu["freq_ghz"] = round(freq, 2)
+            else:
+                cpu_info.append({
+                    "model": model,
+                    "cores": cores,
+                    "threads": threads,
+                    "freq_ghz": round(freq, 2) if freq else None,
+                    "count": 1
+                })
     except Exception as e:
         print(f"[ERROR] CPU info failed: {e}")
         # Минимальная информация в случае ошибки
-        cpu_info.append({
-            "model": "Unknown CPU",
-            "cores": psutil.cpu_count(logical=False) or 1,
-            "threads": psutil.cpu_count(logical=True) or 1,
-            "freq_ghz": None,
-            "count": 1
-        })
+        if not cpu_info:  # Добавляем только если список пустой
+            cpu_info.append({
+                "model": "Unknown CPU",
+                "cores": psutil.cpu_count(logical=False) or 1,
+                "threads": psutil.cpu_count(logical=True) or 1,
+                "freq_ghz": None,
+                "count": 1
+            })
     return cpu_info
 
 # Универсальная функция для RAM
@@ -2415,7 +2428,7 @@ def get_network_usage():
     return usage
 
 def get_gpu_usage():
-    """Получение использования GPU для Linux систем"""
+    """Получение среднего использования GPU для Linux систем"""
     gpu_usage = {}
     system = platform.system()
     
@@ -2423,6 +2436,9 @@ def get_gpu_usage():
         return gpu_usage
     
     try:
+        total_usage = 0
+        gpu_count = 0
+        
         # Попробуем получить информацию через nvidia-smi для NVIDIA
         try:
             nvidia_output = subprocess.check_output(['nvidia-smi', '--query-gpu=name,utilization.gpu', '--format=csv,noheader'], stderr=subprocess.DEVNULL).decode(errors='ignore')
@@ -2434,11 +2450,11 @@ def get_gpu_usage():
                         usage_str = parts[1].strip()
                         usage_match = re.search(r'(\d+)', usage_str)
                         if usage_match:
-                            # Если GPU с таким именем уже есть, суммируем использование
-                            if gpu_name in gpu_usage:
-                                gpu_usage[gpu_name] = max(gpu_usage[gpu_name], int(usage_match.group(1)))
-                            else:
-                                gpu_usage[gpu_name] = int(usage_match.group(1))
+                            usage = int(usage_match.group(1))
+                            total_usage += usage
+                            gpu_count += 1
+                            # Сохраняем также индивидуальное использование для совместимости
+                            gpu_usage[gpu_name] = usage
         except:
             pass
         
@@ -2451,6 +2467,8 @@ def get_gpu_usage():
                     if match:
                         gpu_id = match.group(1)
                         usage = int(match.group(2))
+                        total_usage += usage
+                        gpu_count += 1
                         gpu_usage[f"AMD GPU {gpu_id}"] = usage
         except:
             pass
@@ -2463,11 +2481,19 @@ def get_gpu_usage():
                     if os.path.exists(f'/sys/class/drm/card{i}/device/gpu_busy_percent'):
                         with open(f'/sys/class/drm/card{i}/device/gpu_busy_percent', 'r') as f:
                             usage = int(f.read().strip())
+                            total_usage += usage
+                            gpu_count += 1
                             gpu_usage[f"GPU {i}"] = usage
                 except:
                     continue
         except:
             pass
+        
+        # Вычисляем среднее использование
+        if gpu_count > 0:
+            avg_usage = total_usage / gpu_count
+            # Добавляем среднее использование как отдельное поле
+            gpu_usage["average"] = round(avg_usage, 1)
             
     except Exception as e:
         print(f"[WARNING] GPU usage detection error: {e}")
