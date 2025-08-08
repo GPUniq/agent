@@ -1795,11 +1795,9 @@ def get_location_from_ip(ip_address):
     
     try:
         # Используем ipapi.co для определения местоположения
-        print(f"[INFO] Requesting location data for IP: {ip_address}")
-        response = requests.get(f'https://ipapi.co/{ip_address}/json/', timeout=10)
+        response = requests.get(f'https://ipapi.co/{ip_address}/json/', timeout=5)
         if response.status_code == 200:
             data = response.json()
-            print(f"[DEBUG] Received location data: {data}")
             
             # Формируем строку местоположения
             location_parts = []
@@ -1812,64 +1810,14 @@ def get_location_from_ip(ip_address):
                 location_parts.append(data['country_name'])
             
             if location_parts:
-                location = ', '.join(location_parts)
-                print(f"[INFO] Determined location: {location}")
-                return location
+                return ', '.join(location_parts)
             
             # Fallback к коду страны
             if data.get('country'):
-                print(f"[INFO] Using country code: {data['country']}")
                 return data['country']
                 
-    except requests.exceptions.Timeout:
-        print(f"[WARNING] Timeout getting location from IP {ip_address}")
-    except requests.exceptions.RequestException as e:
-        print(f"[WARNING] Request failed getting location from IP {ip_address}: {e}")
     except Exception as e:
         print(f"[WARNING] Failed to get location from IP {ip_address}: {e}")
-    
-    # Попробуем альтернативный API
-    try:
-        print(f"[INFO] Trying alternative location API for IP: {ip_address}")
-        response = requests.get(f'http://ip-api.com/json/{ip_address}', timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            print(f"[DEBUG] Alternative API data: {data}")
-            
-            if data.get('status') == 'success':
-                location_parts = []
-                
-                if data.get('city'):
-                    location_parts.append(data['city'])
-                if data.get('regionName'):
-                    location_parts.append(data['regionName'])
-                if data.get('country'):
-                    location_parts.append(data['country'])
-                
-                if location_parts:
-                    location = ', '.join(location_parts)
-                    print(f"[INFO] Determined location via alternative API: {location}")
-                    return location
-    except Exception as e:
-        print(f"[WARNING] Alternative location API also failed: {e}")
-    
-    # Попробуем третий API
-    try:
-        print(f"[INFO] Trying third location API for IP: {ip_address}")
-        response = requests.get(f'https://api.ipify.org?format=json', timeout=5)
-        if response.status_code == 200:
-            # Проверим, что IP совпадает
-            data = response.json()
-            if data.get('ip') == ip_address:
-                # Используем простой API для получения страны
-                country_response = requests.get(f'https://ipapi.co/{ip_address}/country/', timeout=5)
-                if country_response.status_code == 200:
-                    country = country_response.text.strip()
-                    if country and country != 'None':
-                        print(f"[INFO] Determined country via third API: {country}")
-                        return country
-    except Exception as e:
-        print(f"[WARNING] Third location API also failed: {e}")
     
     # Fallback к определению по часовому поясу
     try:
@@ -1877,44 +1825,12 @@ def get_location_from_ip(ip_address):
         offset = time.timezone if hasattr(time, 'timezone') else 0
         hours = abs(offset) // 3600
         
-        # Попробуем определить регион по часовому поясу
-        timezone_regions = {
-            -12: "Pacific/Kwajalein",
-            -11: "Pacific/Samoa", 
-            -10: "Pacific/Honolulu",
-            -9: "America/Anchorage",
-            -8: "America/Los_Angeles",
-            -7: "America/Denver",
-            -6: "America/Chicago",
-            -5: "America/New_York",
-            -4: "America/Caracas",
-            -3: "America/Sao_Paulo",
-            -2: "Atlantic/South_Georgia",
-            -1: "Atlantic/Azores",
-            0: "Europe/London",
-            1: "Europe/Paris",
-            2: "Europe/Kiev",
-            3: "Europe/Moscow",
-            4: "Asia/Dubai",
-            5: "Asia/Tashkent",
-            6: "Asia/Almaty",
-            7: "Asia/Bangkok",
-            8: "Asia/Shanghai",
-            9: "Asia/Tokyo",
-            10: "Australia/Sydney",
-            11: "Pacific/Guadalcanal",
-            12: "Pacific/Auckland"
-        }
-        
         if offset == 0:
-            return "UTC (Europe/London)"
-        elif offset in timezone_regions:
-            return f"{timezone_regions[offset]} (UTC{'+' if offset > 0 else ''}{offset//3600:+d}:00)"
+            return "UTC"
+        elif offset > 0:
+            return f"UTC-{hours:02d}:00"
         else:
-            if offset > 0:
-                return f"UTC+{hours:02d}:00"
-            else:
-                return f"UTC-{hours:02d}:00"
+            return f"UTC+{hours:02d}:00"
     except:
         pass
     
@@ -2428,61 +2344,143 @@ if __name__ == "__main__":
         with open(AGENT_ID_FILE, "r") as f:
             agent_id = f.read().strip()
             print(f"[INFO] Loaded agent_id from {AGENT_ID_FILE}: {agent_id}")
-    system_info = get_system_info()
+    
+    # Собираем системную информацию с обработкой ошибок
+    print("[INFO] Collecting system information...")
+    try:
+        system_info = get_system_info()
+        print("[INFO] System information collected successfully")
+    except Exception as e:
+        print(f"[ERROR] Failed to collect system info: {e}")
+        system_info = {"hostname": "unknown", "ip_address": ip_address, "total_ram_gb": 0, "ram_type": "unknown", "hardware_info": {}}
+    
+    # Собираем данные мониторинга с обработкой ошибок
+    print("[INFO] Collecting monitoring data...")
+    try:
+        cpu_usage = psutil.cpu_percent()
+        print(f"[INFO] CPU usage: {cpu_usage}%")
+    except Exception as e:
+        print(f"[WARNING] Failed to get CPU usage: {e}")
+        cpu_usage = 0
+    
+    try:
+        memory_usage = psutil.virtual_memory().percent
+        print(f"[INFO] Memory usage: {memory_usage}%")
+    except Exception as e:
+        print(f"[WARNING] Failed to get memory usage: {e}")
+        memory_usage = 0
+    
+    try:
+        gpu_usage = get_gpu_usage()
+        print(f"[INFO] GPU usage collected")
+    except Exception as e:
+        print(f"[WARNING] Failed to get GPU usage: {e}")
+        gpu_usage = {}
+    
+    try:
+        disk_usage = {part.mountpoint: psutil.disk_usage(part.mountpoint).percent for part in psutil.disk_partitions()}
+        print(f"[INFO] Disk usage collected")
+    except Exception as e:
+        print(f"[WARNING] Failed to get disk usage: {e}")
+        disk_usage = {}
+    
+    try:
+        network_usage = get_network_usage()
+        print(f"[INFO] Network usage collected")
+    except Exception as e:
+        print(f"[WARNING] Failed to get network usage: {e}")
+        network_usage = {}
+    
     data = {
         **system_info,
         "location": location,
         "status": "online",
-        "cpu_usage": psutil.cpu_percent(),
-        "memory_usage": psutil.virtual_memory().percent,
-        "gpu_usage": get_gpu_usage(),
-        "disk_usage": {part.mountpoint: psutil.disk_usage(part.mountpoint).percent for part in psutil.disk_partitions()},
-        "network_usage": get_network_usage(),
+        "cpu_usage": cpu_usage,
+        "memory_usage": memory_usage,
+        "gpu_usage": gpu_usage,
+        "disk_usage": disk_usage,
+        "network_usage": network_usage,
     }
     print(json.dumps(data, indent=2, ensure_ascii=False))
+    
     if not agent_id:
         # Первый запуск — делаем confirm
-        agent_id = confirm_agent(secret_key, data)
-        if agent_id:    
-            with open(AGENT_ID_FILE, "w") as f:
-                f.write(str(agent_id))
-            print(f"[INFO] Saved agent_id to {AGENT_ID_FILE}: {agent_id}")
-        else:
-            print("[ERROR] Could not obtain agent_id from server. Exiting.")
+        print("[INFO] First run - confirming agent with server...")
+        try:
+            agent_id = confirm_agent(secret_key, data)
+            if agent_id:    
+                with open(AGENT_ID_FILE, "w") as f:
+                    f.write(str(agent_id))
+                print(f"[INFO] Saved agent_id to {AGENT_ID_FILE}: {agent_id}")
+            else:
+                print("[ERROR] Could not obtain agent_id from server. Exiting.")
+                sys.exit(1)
+        except Exception as e:
+            print(f"[ERROR] Failed to confirm agent: {e}")
             sys.exit(1)
+    
     # Теперь agent_id есть, делаем init
-    send_init_to_server(agent_id, secret_key, data)
+    print(f"[INFO] Sending init data to server for agent_id: {agent_id}")
+    try:
+        send_init_to_server(agent_id, secret_key, data)
+        print("[INFO] Init data sent successfully")
+    except Exception as e:
+        print(f"[ERROR] Failed to send init data: {e}")
+        # Продолжаем работу даже если init не удался
 
     # Запускаем polling в отдельном потоке
-    polling_thread = threading.Thread(target=poll_for_tasks, args=(agent_id, secret_key), daemon=True)
-    polling_thread.start()
+    print("[INFO] Starting polling thread...")
+    try:
+        polling_thread = threading.Thread(target=poll_for_tasks, args=(agent_id, secret_key), daemon=True)
+        polling_thread.start()
+        print("[INFO] Polling thread started successfully")
+    except Exception as e:
+        print(f"[ERROR] Failed to start polling thread: {e}")
+        sys.exit(1)
     
+    print("[INFO] Agent initialization completed. Starting main loop...")
     # Основной цикл с периодической очисткой, мониторингом и обновлением кода
     cleanup_counter = 0
     git_pull_counter = 0
+    print("[INFO] Main loop started. Agent is running...")
+    
     while True:
-        time.sleep(60)
-        cleanup_counter += 1
-        git_pull_counter += 1
-        
-        # Каждые 10 минут (10 * 60 секунд) очищаем остановленные контейнеры
-        if cleanup_counter >= 10:
-            print("[INFO] Running periodic cleanup...")
-            cleanup_stopped_containers()
+        try:
+            time.sleep(60)
+            cleanup_counter += 1
+            git_pull_counter += 1
             
-            # Показываем список запущенных контейнеров
-            running_containers = list_running_containers()
-            if running_containers:
-                print(f"[INFO] Currently running containers: {len(running_containers)}")
-                for container in running_containers:
-                    print(f"  - {container['name']}: {container['status']} ({container['ports']})")
-            else:
-                print("[INFO] No running containers")
+            # Каждые 10 минут (10 * 60 секунд) очищаем остановленные контейнеры
+            if cleanup_counter >= 10:
+                print("[INFO] Running periodic cleanup...")
+                try:
+                    cleanup_stopped_containers()
+                    
+                    # Показываем список запущенных контейнеров
+                    running_containers = list_running_containers()
+                    if running_containers:
+                        print(f"[INFO] Currently running containers: {len(running_containers)}")
+                        for container in running_containers:
+                            print(f"  - {container['name']}: {container['status']} ({container['ports']})")
+                    else:
+                        print("[INFO] No running containers")
+                except Exception as e:
+                    print(f"[WARNING] Cleanup failed: {e}")
+                
+                cleanup_counter = 0
             
-            cleanup_counter = 0
-        
-        # Каждые 30 минут (30 * 60 секунд) выполняем git pull для обновления кода
-        if git_pull_counter >= 30:
-            print("[INFO] Running periodic git pull...")
-            perform_git_pull()
-            git_pull_counter = 0
+            # Каждые 30 минут (30 * 60 секунд) выполняем git pull для обновления кода
+            if git_pull_counter >= 30:
+                print("[INFO] Running periodic git pull...")
+                try:
+                    perform_git_pull()
+                except Exception as e:
+                    print(f"[WARNING] Git pull failed: {e}")
+                git_pull_counter = 0
+                
+        except KeyboardInterrupt:
+            print("[INFO] Received interrupt signal. Shutting down...")
+            break
+        except Exception as e:
+            print(f"[ERROR] Main loop error: {e}")
+            time.sleep(10)  # Пауза перед продолжением
