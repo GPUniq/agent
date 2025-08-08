@@ -1763,6 +1763,7 @@ def get_disk_info():
                 for line in lines[header_index + 1:]:
                     if line.strip() and 'disk' in line:
                         parts = line.split()
+                        print(f"[DEBUG] Processing disk: {parts}")
                         if len(parts) >= 4:
                             name = parts[0]
                             model = parts[1] if parts[1] != '-' else "Unknown"
