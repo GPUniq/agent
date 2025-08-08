@@ -2499,7 +2499,7 @@ def get_hostname():
     return platform.node()
 
 def get_location_from_ip(ip_address):
-    """Определяет местоположение по IP адресу"""
+    """Определяет код региона по IP адресу"""
     if not ip_address:
         return "Unknown"
     
@@ -2509,42 +2509,53 @@ def get_location_from_ip(ip_address):
         if response.status_code == 200:
             data = response.json()
             
-            # Формируем строку местоположения
-            location_parts = []
-            
-            if data.get('city'):
-                location_parts.append(data['city'])
-            if data.get('region'):
-                location_parts.append(data['region'])
-            if data.get('country_name'):
-                location_parts.append(data['country_name'])
-            
-            if location_parts:
-                return ', '.join(location_parts)
-            
-            # Fallback к коду страны
+            # Возвращаем код страны (например, "ru", "us", "de")
             if data.get('country'):
-                return data['country']
+                return data['country'].lower()
                 
     except Exception as e:
         print(f"[WARNING] Failed to get location from IP {ip_address}: {e}")
     
-    # Fallback к определению по часовому поясу
+    # Fallback к определению по часовому поясу и маппингу на регионы
     try:
         import time
         offset = time.timezone if hasattr(time, 'timezone') else 0
         hours = abs(offset) // 3600
         
+        # Маппинг часовых поясов на коды регионов
+        timezone_to_region = {
+            0: "gb",      # UTC
+            1: "gb",      # UTC+1 (UK)
+            2: "de",      # UTC+2 (Central Europe)
+            3: "ru",      # UTC+3 (Moscow)
+            4: "ru",      # UTC+4 (Samara)
+            5: "ru",      # UTC+5 (Yekaterinburg)
+            6: "ru",      # UTC+6 (Omsk)
+            7: "ru",      # UTC+7 (Novosibirsk)
+            8: "ru",      # UTC+8 (Krasnoyarsk)
+            9: "ru",      # UTC+9 (Irkutsk)
+            10: "ru",     # UTC+10 (Vladivostok)
+            11: "ru",     # UTC+11 (Magadan)
+            12: "ru",     # UTC+12 (Kamchatka)
+            -5: "us",     # UTC-5 (Eastern US)
+            -6: "us",     # UTC-6 (Central US)
+            -7: "us",     # UTC-7 (Mountain US)
+            -8: "us",     # UTC-8 (Pacific US)
+            -9: "us",     # UTC-9 (Alaska)
+            -10: "us",    # UTC-10 (Hawaii)
+        }
+        
         if offset == 0:
-            return "UTC"
-        elif offset > 0:
-            return f"UTC-{hours:02d}:00"
+            return "gb"  # UTC
+        elif offset in timezone_to_region:
+            return timezone_to_region[offset]
         else:
-            return f"UTC+{hours:02d}:00"
+            # Для неизвестных часовых поясов возвращаем "unknown"
+            return "unknown"
     except:
         pass
     
-    return "Unknown"
+    return "unknown"
 
 def get_hardware_info():
     print("[DEBUG] Getting CPU info...")
@@ -2640,7 +2651,7 @@ def send_init_to_server(agent_id, secret_key, data):
         return None
 
 def get_cpu_temperature():
-    """Get CPU temperature in Celsius"""
+    """Get CPU temperature in Celsius as integer"""
     system = platform.system()
     temperature = None
     
@@ -2665,13 +2676,13 @@ def get_cpu_temperature():
                             with open(file_path, 'r') as f:
                                 temp_raw = f.read().strip()
                                 if temp_raw.isdigit():
-                                    temperature = int(temp_raw) / 1000.0  # Convert from millidegrees
+                                    temperature = int(int(temp_raw) / 1000)  # Convert from millidegrees to integer
                                     break
                     else:
                         with open(source, 'r') as f:
                             temp_raw = f.read().strip()
                             if temp_raw.isdigit():
-                                temperature = int(temp_raw) / 1000.0  # Convert from millidegrees
+                                temperature = int(int(temp_raw) / 1000)  # Convert from millidegrees to integer
                                 break
                 except:
                     continue
@@ -2683,12 +2694,12 @@ def get_cpu_temperature():
                     # Ищем температуру CPU
                     temp_match = re.search(r'Core 0:\s*\+(\d+(?:\.\d+)?)°C', sensors_output)
                     if temp_match:
-                        temperature = float(temp_match.group(1))
+                        temperature = int(float(temp_match.group(1)))
                     else:
                         # Попробуем найти любую температуру CPU
                         temp_match = re.search(r'CPU.*\+(\d+(?:\.\d+)?)°C', sensors_output)
                         if temp_match:
-                            temperature = float(temp_match.group(1))
+                            temperature = int(float(temp_match.group(1)))
                 except:
                     pass
                     
@@ -2698,7 +2709,7 @@ def get_cpu_temperature():
                 powermetrics_output = subprocess.check_output(['sudo', 'powermetrics', '-n', '1', '-i', '1000'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                 temp_match = re.search(r'CPU die temperature: (\d+(?:\.\d+)?)', powermetrics_output)
                 if temp_match:
-                    temperature = float(temp_match.group(1))
+                    temperature = int(float(temp_match.group(1)))
             except:
                 pass
                 
@@ -2710,7 +2721,7 @@ def get_cpu_temperature():
                 if temp_match:
                     # Windows возвращает температуру в десятых градуса Кельвина
                     temp_kelvin = int(temp_match.group(1)) / 10.0
-                    temperature = temp_kelvin - 273.15  # Convert to Celsius
+                    temperature = int(temp_kelvin - 273.15)  # Convert to Celsius as integer
             except:
                 pass
                 
