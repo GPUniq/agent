@@ -1795,9 +1795,11 @@ def get_location_from_ip(ip_address):
     
     try:
         # Используем ipapi.co для определения местоположения
-        response = requests.get(f'https://ipapi.co/{ip_address}/json/', timeout=5)
+        print(f"[INFO] Requesting location data for IP: {ip_address}")
+        response = requests.get(f'https://ipapi.co/{ip_address}/json/', timeout=10)
         if response.status_code == 200:
             data = response.json()
+            print(f"[DEBUG] Received location data: {data}")
             
             # Формируем строку местоположения
             location_parts = []
@@ -1810,14 +1812,64 @@ def get_location_from_ip(ip_address):
                 location_parts.append(data['country_name'])
             
             if location_parts:
-                return ', '.join(location_parts)
+                location = ', '.join(location_parts)
+                print(f"[INFO] Determined location: {location}")
+                return location
             
             # Fallback к коду страны
             if data.get('country'):
+                print(f"[INFO] Using country code: {data['country']}")
                 return data['country']
                 
+    except requests.exceptions.Timeout:
+        print(f"[WARNING] Timeout getting location from IP {ip_address}")
+    except requests.exceptions.RequestException as e:
+        print(f"[WARNING] Request failed getting location from IP {ip_address}: {e}")
     except Exception as e:
         print(f"[WARNING] Failed to get location from IP {ip_address}: {e}")
+    
+    # Попробуем альтернативный API
+    try:
+        print(f"[INFO] Trying alternative location API for IP: {ip_address}")
+        response = requests.get(f'http://ip-api.com/json/{ip_address}', timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            print(f"[DEBUG] Alternative API data: {data}")
+            
+            if data.get('status') == 'success':
+                location_parts = []
+                
+                if data.get('city'):
+                    location_parts.append(data['city'])
+                if data.get('regionName'):
+                    location_parts.append(data['regionName'])
+                if data.get('country'):
+                    location_parts.append(data['country'])
+                
+                if location_parts:
+                    location = ', '.join(location_parts)
+                    print(f"[INFO] Determined location via alternative API: {location}")
+                    return location
+    except Exception as e:
+        print(f"[WARNING] Alternative location API also failed: {e}")
+    
+    # Попробуем третий API
+    try:
+        print(f"[INFO] Trying third location API for IP: {ip_address}")
+        response = requests.get(f'https://api.ipify.org?format=json', timeout=5)
+        if response.status_code == 200:
+            # Проверим, что IP совпадает
+            data = response.json()
+            if data.get('ip') == ip_address:
+                # Используем простой API для получения страны
+                country_response = requests.get(f'https://ipapi.co/{ip_address}/country/', timeout=5)
+                if country_response.status_code == 200:
+                    country = country_response.text.strip()
+                    if country and country != 'None':
+                        print(f"[INFO] Determined country via third API: {country}")
+                        return country
+    except Exception as e:
+        print(f"[WARNING] Third location API also failed: {e}")
     
     # Fallback к определению по часовому поясу
     try:
@@ -1825,12 +1877,44 @@ def get_location_from_ip(ip_address):
         offset = time.timezone if hasattr(time, 'timezone') else 0
         hours = abs(offset) // 3600
         
+        # Попробуем определить регион по часовому поясу
+        timezone_regions = {
+            -12: "Pacific/Kwajalein",
+            -11: "Pacific/Samoa", 
+            -10: "Pacific/Honolulu",
+            -9: "America/Anchorage",
+            -8: "America/Los_Angeles",
+            -7: "America/Denver",
+            -6: "America/Chicago",
+            -5: "America/New_York",
+            -4: "America/Caracas",
+            -3: "America/Sao_Paulo",
+            -2: "Atlantic/South_Georgia",
+            -1: "Atlantic/Azores",
+            0: "Europe/London",
+            1: "Europe/Paris",
+            2: "Europe/Kiev",
+            3: "Europe/Moscow",
+            4: "Asia/Dubai",
+            5: "Asia/Tashkent",
+            6: "Asia/Almaty",
+            7: "Asia/Bangkok",
+            8: "Asia/Shanghai",
+            9: "Asia/Tokyo",
+            10: "Australia/Sydney",
+            11: "Pacific/Guadalcanal",
+            12: "Pacific/Auckland"
+        }
+        
         if offset == 0:
-            return "UTC"
-        elif offset > 0:
-            return f"UTC-{hours:02d}:00"
+            return "UTC (Europe/London)"
+        elif offset in timezone_regions:
+            return f"{timezone_regions[offset]} (UTC{'+' if offset > 0 else ''}{offset//3600:+d}:00)"
         else:
-            return f"UTC+{hours:02d}:00"
+            if offset > 0:
+                return f"UTC+{hours:02d}:00"
+            else:
+                return f"UTC-{hours:02d}:00"
     except:
         pass
     
