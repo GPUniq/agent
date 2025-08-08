@@ -16,6 +16,90 @@ AGENT_ID_FILE = ".agent_id"
 # Список необходимых пакетов
 REQUIRED_PACKAGES = ["psutil", "requests", "docker"]
 
+# Заглушка для psutil (определяем заранее)
+class PsutilStub:
+    def cpu_percent(self): 
+        try:
+            with open('/proc/loadavg', 'r') as f:
+                load = float(f.read().split()[0])
+                return min(load * 25, 100)
+        except:
+            return 0
+    
+    def virtual_memory(self): 
+        class Mem:
+            def __init__(self): 
+                try:
+                    with open('/proc/meminfo', 'r') as f:
+                        meminfo = f.read()
+                        total_match = re.search(r'MemTotal:\s+(\d+)', meminfo)
+                        free_match = re.search(r'MemAvailable:\s+(\d+)', meminfo)
+                        if total_match and free_match:
+                            total = int(total_match.group(1))
+                            free = int(free_match.group(1))
+                            self.percent = ((total - free) / total) * 100
+                        else:
+                            self.percent = 0
+                except:
+                    self.percent = 0
+        return Mem()
+    
+    def disk_partitions(self): 
+        try:
+            partitions = []
+            with open('/proc/mounts', 'r') as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        mountpoint = parts[1]
+                        if mountpoint.startswith('/') and not mountpoint.startswith('/proc'):
+                            partitions.append(type('Partition', (), {'mountpoint': mountpoint})())
+            return partitions
+        except:
+            return []
+    
+    def disk_usage(self, path): 
+        class Disk:
+            def __init__(self): 
+                try:
+                    result = subprocess.run(['df', path], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        lines = result.stdout.strip().split('\n')
+                        if len(lines) > 1:
+                            parts = lines[1].split()
+                            if len(parts) >= 5:
+                                used_percent = int(parts[4].rstrip('%'))
+                                self.percent = used_percent
+                            else:
+                                self.percent = 0
+                        else:
+                            self.percent = 0
+                    else:
+                        self.percent = 0
+                except:
+                    self.percent = 0
+        return Disk()
+    
+    def net_io_counters(self, pernic=False): 
+        class Net:
+            def __init__(self): 
+                try:
+                    with open('/proc/net/dev', 'r') as f:
+                        lines = f.readlines()[2:]
+                        total_sent = 0
+                        total_recv = 0
+                        for line in lines:
+                            parts = line.split()
+                            if len(parts) >= 10:
+                                total_recv += int(parts[1])
+                                total_sent += int(parts[9])
+                        self.bytes_sent = total_sent
+                        self.bytes_recv = total_recv
+                except:
+                    self.bytes_sent = 0
+                    self.bytes_recv = 0
+        return Net()
+
 def install_and_import(package):
     try:
         # Сначала пробуем импортировать
@@ -25,103 +109,79 @@ def install_and_import(package):
     except ImportError:
         print(f"[INFO] Installing {package}...")
         try:
-            # Пробуем установить с --user флагом
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", package])
+            # Пробуем установить с --user флагом и игнорируем конфликты
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--no-deps", package])
         except subprocess.CalledProcessError:
-            # Если не получилось, пробуем без --user
-            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+            try:
+                # Если не получилось, пробуем с --force-reinstall
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--force-reinstall", "--no-deps", package])
+            except subprocess.CalledProcessError:
+                # Если все еще не получилось, пробуем без --user
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--force-reinstall", "--no-deps", package])
         finally:
-            globals()[package] = importlib.import_module(package)
+            try:
+                globals()[package] = importlib.import_module(package)
+            except ImportError:
+                print(f"[WARNING] Could not import {package} after installation")
+                if package == "psutil":
+                    print("[INFO] psutil has issues, using fallback...")
+                    # Создаем заглушку для psutil
+                elif package == "requests":
+                    print("[ERROR] requests is required but could not be installed")
+                    sys.exit(1)
+                elif package == "docker":
+                    print("[WARNING] docker package could not be installed, but Docker CLI should still work")
     except Exception as e:
         print(f"[WARNING] Failed to import {package}: {e}")
         if package == "psutil":
             print("[INFO] psutil has issues, using fallback...")
-            # Создаем заглушку для psutil
-            class PsutilStub:
-                def cpu_percent(self): 
-                    try:
-                        with open('/proc/loadavg', 'r') as f:
-                            load = float(f.read().split()[0])
-                            return min(load * 25, 100)
-                    except:
-                        return 0
-                
-                def virtual_memory(self): 
-                    class Mem:
-                        def __init__(self): 
-                            try:
-                                with open('/proc/meminfo', 'r') as f:
-                                    meminfo = f.read()
-                                    total_match = re.search(r'MemTotal:\s+(\d+)', meminfo)
-                                    free_match = re.search(r'MemAvailable:\s+(\d+)', meminfo)
-                                    if total_match and free_match:
-                                        total = int(total_match.group(1))
-                                        free = int(free_match.group(1))
-                                        self.percent = ((total - free) / total) * 100
-                                    else:
-                                        self.percent = 0
-                            except:
-                                self.percent = 0
-                    return Mem()
-                
-                def disk_partitions(self): 
-                    try:
-                        partitions = []
-                        with open('/proc/mounts', 'r') as f:
-                            for line in f:
-                                parts = line.split()
-                                if len(parts) >= 2:
-                                    mountpoint = parts[1]
-                                    if mountpoint.startswith('/') and not mountpoint.startswith('/proc'):
-                                        partitions.append(type('Partition', (), {'mountpoint': mountpoint})())
-                        return partitions
-                    except:
-                        return []
-                
-                def disk_usage(self, path): 
-                    class Disk:
-                        def __init__(self): 
-                            try:
-                                result = subprocess.run(['df', path], capture_output=True, text=True)
-                                if result.returncode == 0:
-                                    lines = result.stdout.strip().split('\n')
-                                    if len(lines) > 1:
-                                        parts = lines[1].split()
-                                        if len(parts) >= 5:
-                                            used_percent = int(parts[4].rstrip('%'))
-                                            self.percent = used_percent
-                                        else:
-                                            self.percent = 0
-                                    else:
-                                        self.percent = 0
-                                else:
-                                    self.percent = 0
-                            except:
-                                self.percent = 0
-                    return Disk()
-                
-                def net_io_counters(self, pernic=False): 
-                    class Net:
-                        def __init__(self): 
-                            try:
-                                with open('/proc/net/dev', 'r') as f:
-                                    lines = f.readlines()[2:]
-                                    total_sent = 0
-                                    total_recv = 0
-                                    for line in lines:
-                                        parts = line.split()
-                                        if len(parts) >= 10:
-                                            total_recv += int(parts[1])
-                                            total_sent += int(parts[9])
-                                    self.bytes_sent = total_sent
-                                    self.bytes_recv = total_recv
-                            except:
-                                self.bytes_sent = 0
-                                self.bytes_recv = 0
-                    return Net()
-            
             globals()[package] = PsutilStub()
-            print("[INFO] Using psutil fallback")
+        elif package == "requests":
+            print("[ERROR] requests is required but could not be installed")
+            sys.exit(1)
+        elif package == "docker":
+            print("[WARNING] docker package could not be installed, but Docker CLI should still work")
+
+# Функция для исправления конфликтов зависимостей
+def fix_dependency_conflicts():
+    """Исправляет конфликты зависимостей pip"""
+    print("[INFO] Checking for dependency conflicts...")
+    try:
+        # Проверяем конфликты
+        result = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True)
+        if result.returncode != 0:
+            print("[INFO] Found dependency conflicts, attempting to fix...")
+            
+            # Обновляем проблемные пакеты
+            conflicts = [
+                ("Jinja2", ">=3.1.2"),
+                ("flask", "3.0.2"),
+                ("requests", "latest"),
+                ("docker", "latest")
+            ]
+            
+            for package, version in conflicts:
+                try:
+                    if version == "latest":
+                        subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--upgrade", package], 
+                                     capture_output=True, check=True)
+                    else:
+                        subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--upgrade", f"{package}{version}"], 
+                                     capture_output=True, check=True)
+                    print(f"[INFO] Updated {package}")
+                except:
+                    pass
+            
+            # Очищаем кэш pip
+            subprocess.run([sys.executable, "-m", "pip", "cache", "purge"], capture_output=True)
+            print("[INFO] Dependency conflicts fixed")
+        else:
+            print("[INFO] No dependency conflicts found")
+    except Exception as e:
+        print(f"[WARNING] Could not check dependencies: {e}")
+
+# Исправляем конфликты зависимостей
+fix_dependency_conflicts()
 
 # Устанавливаем пакеты
 for pkg in REQUIRED_PACKAGES:
