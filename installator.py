@@ -1837,10 +1837,38 @@ def get_location_from_ip(ip_address):
     return "Unknown"
 
 def get_hardware_info():
-    cpus = get_cpu_info()
-    gpus = get_gpu_info()
-    disks = get_disk_info()
-    networks = get_network_info()
+    print("[DEBUG] Getting CPU info...")
+    try:
+        cpus = get_cpu_info()
+        print(f"[DEBUG] CPU info collected: {len(cpus)} CPUs")
+    except Exception as e:
+        print(f"[WARNING] Failed to get CPU info: {e}")
+        cpus = []
+    
+    print("[DEBUG] Getting GPU info...")
+    try:
+        gpus = get_gpu_info()
+        print(f"[DEBUG] GPU info collected: {len(gpus)} GPUs")
+    except Exception as e:
+        print(f"[WARNING] Failed to get GPU info: {e}")
+        gpus = []
+    
+    print("[DEBUG] Getting disk info...")
+    try:
+        disks = get_disk_info()
+        print(f"[DEBUG] Disk info collected: {len(disks)} disks")
+    except Exception as e:
+        print(f"[WARNING] Failed to get disk info: {e}")
+        disks = []
+    
+    print("[DEBUG] Getting network info...")
+    try:
+        networks = get_network_info()
+        print(f"[DEBUG] Network info collected: {len(networks)} networks")
+    except Exception as e:
+        print(f"[WARNING] Failed to get network info: {e}")
+        networks = []
+    
     return {
         "cpus": cpus,
         "gpus": gpus,
@@ -1849,10 +1877,38 @@ def get_hardware_info():
     }
 
 def get_system_info():
-    hostname = get_hostname()
-    ip_address = get_ip_address()
-    total_ram_gb, ram_type = get_ram_info()
-    hardware_info = get_hardware_info()
+    print("[DEBUG] Getting hostname...")
+    try:
+        hostname = get_hostname()
+        print(f"[DEBUG] Hostname: {hostname}")
+    except Exception as e:
+        print(f"[WARNING] Failed to get hostname: {e}")
+        hostname = "unknown"
+    
+    print("[DEBUG] Getting IP address...")
+    try:
+        ip_address = get_ip_address()
+        print(f"[DEBUG] IP address: {ip_address}")
+    except Exception as e:
+        print(f"[WARNING] Failed to get IP address: {e}")
+        ip_address = "unknown"
+    
+    print("[DEBUG] Getting RAM info...")
+    try:
+        total_ram_gb, ram_type = get_ram_info()
+        print(f"[DEBUG] RAM: {total_ram_gb}GB, type: {ram_type}")
+    except Exception as e:
+        print(f"[WARNING] Failed to get RAM info: {e}")
+        total_ram_gb, ram_type = 0, "unknown"
+    
+    print("[DEBUG] Getting hardware info...")
+    try:
+        hardware_info = get_hardware_info()
+        print("[DEBUG] Hardware info collected")
+    except Exception as e:
+        print(f"[WARNING] Failed to get hardware info: {e}")
+        hardware_info = {"cpus": [], "gpus": [], "disks": [], "networks": []}
+    
     return {
         "hostname": hostname,
         "ip_address": ip_address,
