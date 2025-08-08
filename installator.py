@@ -18,16 +18,38 @@ REQUIRED_PACKAGES = ["psutil", "requests", "docker"]
 
 def install_and_import(package):
     try:
-        importlib.import_module(package)
+        # Сначала пробуем импортировать
+        module = importlib.import_module(package)
+        globals()[package] = module
+        print(f"[INFO] {package} already available")
     except ImportError:
         print(f"[INFO] Installing {package}...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", package])
-    finally:
-        globals()[package] = importlib.import_module(package)
+        try:
+            # Пробуем установить с --user флагом
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", package])
+        except subprocess.CalledProcessError:
+            # Если не получилось, пробуем без --user
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+        finally:
+            globals()[package] = importlib.import_module(package)
+    except Exception as e:
+        print(f"[WARNING] Failed to import {package}: {e}")
+        if package == "psutil":
+            print("[INFO] Trying to fix psutil installation...")
+            try:
+                # Удаляем системную версию и устанавливаем заново
+                subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "psutil"], capture_output=True)
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--force-reinstall", "psutil"])
+                globals()[package] = importlib.import_module(package)
+            except:
+                print("[ERROR] Cannot fix psutil. Please run: pip3 install --user --force-reinstall psutil")
+                sys.exit(1)
 
+# Устанавливаем пакеты
 for pkg in REQUIRED_PACKAGES:
     install_and_import(pkg)
 
+# Импортируем после установки
 import psutil
 import requests
 
