@@ -1168,9 +1168,13 @@ def get_gpu_info():
                                                 # Получаем информацию для всех GPU и находим нужную
                                                 gpu_lines = clock_info.strip().split('\n')
                                                 if gpu_index < len(gpu_lines):
-                                                    graphics_clock_mhz = float(gpu_lines[gpu_index].strip())
-                                                    # Оценка TFLOPS: (cuda_cores * graphics_clock * 2) / 1000000
-                                                    tflops = (cuda_cores * graphics_clock_mhz * 2) / 1000000
+                                                    clock_str = gpu_lines[gpu_index].strip()
+                                                    # Парсим частоту из строки вида "2400 MHz"
+                                                    clock_match = re.search(r'(\d+(?:\.\d+)?)\s*MHz', clock_str)
+                                                    if clock_match:
+                                                        graphics_clock_mhz = float(clock_match.group(1))
+                                                        # Оценка TFLOPS: (cuda_cores * graphics_clock * 2) / 1000000
+                                                        tflops = (cuda_cores * graphics_clock_mhz * 2) / 1000000
                                         except subprocess.TimeoutExpired:
                                             print(f"[WARNING] Timeout getting clock info for GPU {gpu_index}")
                                         except Exception as e:
@@ -1193,12 +1197,16 @@ def get_gpu_info():
                                                 # Получаем информацию для всех GPU и находим нужную
                                                 gpu_lines = clock_info.strip().split('\n')
                                                 if gpu_index < len(gpu_lines):
-                                                    try:
-                                                        graphics_clock_mhz = float(gpu_lines[gpu_index].strip())
-                                                        # Оценка TFLOPS: (cuda_cores * graphics_clock * 2) / 1000000
-                                                        tflops = (cuda_cores * graphics_clock_mhz * 2) / 1000000
-                                                    except:
-                                                        pass
+                                                     try:
+                                                         clock_str = gpu_lines[gpu_index].strip()
+                                                         # Парсим частоту из строки вида "2400 MHz"
+                                                         clock_match = re.search(r'(\d+(?:\.\d+)?)\s*MHz', clock_str)
+                                                         if clock_match:
+                                                             graphics_clock_mhz = float(clock_match.group(1))
+                                                             # Оценка TFLOPS: (cuda_cores * graphics_clock * 2) / 1000000
+                                                             tflops = (cuda_cores * graphics_clock_mhz * 2) / 1000000
+                                                     except:
+                                                         pass
                                             # Попробуем получить через sysfs
                                             try:
                                                 for i in range(10):
