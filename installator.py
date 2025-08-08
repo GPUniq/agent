@@ -2050,6 +2050,52 @@ def confirm_agent(secret_key, data):
         print(f"[ERROR] Failed to confirm agent: {e}")
         return None
 
+# === Git Auto-Update ===
+def perform_git_pull():
+    """Выполняет git pull для обновления кода агента"""
+    try:
+        # Проверяем, что мы в git репозитории
+        if not os.path.exists('.git'):
+            print("[INFO] Not a git repository, skipping git pull")
+            return False
+        
+        # Проверяем, что git доступен
+        try:
+            subprocess.run(['git', '--version'], check=True, capture_output=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("[WARNING] Git not available, skipping git pull")
+            return False
+        
+        print("[INFO] Performing git pull to update agent code...")
+        
+        # Сохраняем текущую ветку
+        current_branch = subprocess.check_output(['git', 'branch', '--show-current'], 
+                                               stderr=subprocess.DEVNULL, 
+                                               text=True).strip()
+        
+        # Выполняем git pull
+        result = subprocess.run(['git', 'pull', 'origin', current_branch], 
+                              capture_output=True, text=True, timeout=60)
+        
+        if result.returncode == 0:
+            if "Already up to date" in result.stdout:
+                print("[INFO] Agent code is already up to date")
+            else:
+                print(f"[INFO] Agent code updated successfully: {result.stdout.strip()}")
+                # Если код обновился, можно добавить логику перезапуска
+                # Например, установить флаг для graceful restart
+            return True
+        else:
+            print(f"[WARNING] Git pull failed: {result.stderr.strip()}")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print("[WARNING] Git pull timed out")
+        return False
+    except Exception as e:
+        print(f"[WARNING] Git pull error: {e}")
+        return False
+
 if __name__ == "__main__":
     import json
     if len(sys.argv) < 2:
@@ -2114,11 +2160,13 @@ if __name__ == "__main__":
     polling_thread = threading.Thread(target=poll_for_tasks, args=(agent_id, secret_key), daemon=True)
     polling_thread.start()
     
-    # Основной цикл с периодической очисткой и мониторингом
+    # Основной цикл с периодической очисткой, мониторингом и обновлением кода
     cleanup_counter = 0
+    git_pull_counter = 0
     while True:
         time.sleep(60)
         cleanup_counter += 1
+        git_pull_counter += 1
         
         # Каждые 10 минут (10 * 60 секунд) очищаем остановленные контейнеры
         if cleanup_counter >= 10:
@@ -2135,3 +2183,9 @@ if __name__ == "__main__":
                 print("[INFO] No running containers")
             
             cleanup_counter = 0
+        
+        # Каждые 30 минут (30 * 60 секунд) выполняем git pull для обновления кода
+        if git_pull_counter >= 30:
+            print("[INFO] Running periodic git pull...")
+            perform_git_pull()
+            git_pull_counter = 0
