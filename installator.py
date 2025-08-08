@@ -133,30 +133,37 @@ def fix_docker_permissions():
         except Exception as e:
             print(f"[WARNING] Failed to restart Docker service: {e}")
         
+        # Применяем изменения группы без перезагрузки
+        try:
+            subprocess.run(['newgrp', 'docker'], check=True)
+            print("[INFO] Applied docker group changes")
+        except Exception as e:
+            print(f"[WARNING] Failed to apply group changes: {e}")
+        
         # Ждем немного и проверяем снова
         time.sleep(3)
         
+        # Проверяем Docker без sudo
         try:
             result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 print("[INFO] Docker permissions fixed successfully")
                 return True
+        except:
+            pass
+        
+        # Если не работает без sudo, проверяем с sudo
+        print("[INFO] Docker requires sudo, checking sudo access...")
+        try:
+            result = subprocess.run(['sudo', 'docker', 'ps'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                print("[INFO] Docker accessible with sudo")
+                return True
             else:
-                print(f"[WARNING] Docker still not accessible: {result.stderr}")
-                # Пробуем с sudo как fallback
-                try:
-                    result = subprocess.run(['sudo', 'docker', 'ps'], capture_output=True, text=True, timeout=10)
-                    if result.returncode == 0:
-                        print("[INFO] Docker accessible with sudo")
-                        return True
-                    else:
-                        print(f"[WARNING] Docker not accessible even with sudo: {result.stderr}")
-                        return False
-                except Exception as e:
-                    print(f"[WARNING] Docker sudo test failed: {e}")
-                    return False
+                print(f"[WARNING] Docker not accessible even with sudo: {result.stderr}")
+                return False
         except Exception as e:
-            print(f"[WARNING] Docker test failed: {e}")
+            print(f"[WARNING] Docker sudo test failed: {e}")
             return False
             
     except Exception as e:
@@ -295,17 +302,19 @@ import requests
 # Функция для выполнения Docker команд
 def docker_cmd(cmd_args, **kwargs):
     """Выполняет Docker команду с автоматическим sudo если нужно"""
-    if os.environ.get('DOCKER_CMD') == 'sudo docker':
-        # Используем sudo docker
+    # Проверяем, работает ли Docker без sudo
+    use_sudo = False
+    try:
+        result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            use_sudo = True
+    except:
+        use_sudo = True
+    
+    if use_sudo:
         full_cmd = ['sudo', 'docker'] + cmd_args
     else:
-        # Пробуем обычный docker, если не работает - используем sudo
-        try:
-            full_cmd = ['docker'] + cmd_args
-            result = subprocess.run(full_cmd, **kwargs)
-            return result
-        except:
-            full_cmd = ['sudo', 'docker'] + cmd_args
+        full_cmd = ['docker'] + cmd_args
     
     return subprocess.run(full_cmd, **kwargs)
 
@@ -425,33 +434,12 @@ def check_and_install_docker():
             subprocess.run(['docker', '--version'], check=True, capture_output=True)
             print("[INFO] Docker is installed but not working")
             
-            # Пробуем запустить Docker сервис
-            try:
-                subprocess.run(['sudo', 'systemctl', 'start', 'docker'], check=True)
-                time.sleep(2)
-                print("[INFO] Docker service started")
-            except:
-                print("[WARNING] Could not start Docker service")
-            
-            # Пробуем добавить пользователя в группу docker
-            try:
-                current_user = os.getenv('USER', 'root')
-                subprocess.run(['sudo', 'usermod', '-aG', 'docker', current_user], check=True)
-                print(f"[INFO] Added user {current_user} to docker group")
-                
-                # Пробуем использовать sudo для docker
-                try:
-                    subprocess.run(['sudo', 'docker', 'ps'], check=True, capture_output=True)
-                    print("[INFO] Docker works with sudo")
-                    
-                    # Создаем алиас для docker с sudo
-                    os.environ['DOCKER_CMD'] = 'sudo docker'
-                    return True
-                except:
-                    pass
-                
-            except:
-                print("[WARNING] Could not add user to docker group")
+            # Используем улучшенную функцию для исправления прав
+            if fix_docker_permissions():
+                print("[INFO] Docker permissions fixed successfully")
+                return True
+            else:
+                print("[WARNING] Could not fix Docker permissions")
             
             # Если ничего не помогло, пробуем установить заново
             print("[INFO] Attempting Docker reinstallation...")
