@@ -38,11 +38,26 @@ def install_and_import(package):
             print("[INFO] Trying to fix psutil installation...")
             try:
                 # Удаляем системную версию и устанавливаем заново
+                print("[INFO] Removing system psutil...")
                 subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "psutil"], capture_output=True)
-                subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--force-reinstall", "psutil"])
+                subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "python3-psutil"], capture_output=True)
+                
+                # Очищаем кэш
+                print("[INFO] Clearing pip cache...")
+                subprocess.run([sys.executable, "-m", "pip", "cache", "purge"], capture_output=True)
+                
+                # Устанавливаем заново
+                print("[INFO] Installing psutil fresh...")
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--user", "--force-reinstall", "--no-cache-dir", "psutil"])
+                
+                # Проверяем установку
                 globals()[package] = importlib.import_module(package)
-            except:
-                print("[ERROR] Cannot fix psutil. Please run: pip3 install --user --force-reinstall psutil")
+                print("[INFO] psutil fixed successfully!")
+            except Exception as fix_error:
+                print(f"[ERROR] Cannot fix psutil: {fix_error}")
+                print("[INFO] Please run these commands manually:")
+                print("sudo apt-get remove -y python3-psutil")
+                print("pip3 install --user --force-reinstall psutil")
                 sys.exit(1)
 
 # Устанавливаем пакеты
