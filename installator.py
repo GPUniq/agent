@@ -14,7 +14,7 @@ import os
 AGENT_ID_FILE = ".agent_id"
 
 # Список необходимых пакетов
-REQUIRED_PACKAGES = ["psutil", "requests"]
+REQUIRED_PACKAGES = ["psutil", "requests", "docker"]
 
 def install_and_import(package):
     try:
@@ -30,6 +30,124 @@ for pkg in REQUIRED_PACKAGES:
 
 import psutil
 import requests
+
+def install_docker():
+    """Устанавливает Docker на систему"""
+    system = platform.system()
+    
+    print("[INFO] Checking Docker installation...")
+    
+    # Проверяем, установлен ли Docker
+    try:
+        subprocess.run(['docker', '--version'], check=True, capture_output=True)
+        print("[INFO] Docker is already installed")
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("[INFO] Docker not found, installing...")
+    
+    try:
+        if system == "Linux":
+            # Установка Docker на Linux
+            print("[INFO] Installing Docker on Linux...")
+            
+            # Определяем дистрибутив
+            try:
+                with open('/etc/os-release') as f:
+                    os_info = f.read()
+                    if 'ubuntu' in os_info.lower() or 'debian' in os_info.lower():
+                        distro = 'ubuntu'
+                    elif 'centos' in os_info.lower() or 'rhel' in os_info.lower() or 'fedora' in os_info.lower():
+                        distro = 'centos'
+                    else:
+                        distro = 'ubuntu'  # По умолчанию
+            except:
+                distro = 'ubuntu'  # По умолчанию
+            
+            if distro == 'ubuntu':
+                # Установка Docker на Ubuntu/Debian
+                print("[INFO] Installing Docker on Ubuntu/Debian...")
+                
+                # Обновляем пакеты
+                subprocess.run(['sudo', 'apt-get', 'update'], check=True)
+                
+                # Устанавливаем необходимые пакеты
+                subprocess.run(['sudo', 'apt-get', 'install', '-y', 'apt-transport-https', 'ca-certificates', 'curl', 'gnupg', 'lsb-release'], check=True)
+                
+                # Добавляем GPG ключ Docker
+                subprocess.run('curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg', shell=True, check=True)
+                
+                # Добавляем репозиторий Docker
+                subprocess.run('echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null', shell=True, check=True)
+                
+                # Обновляем пакеты и устанавливаем Docker
+                subprocess.run(['sudo', 'apt-get', 'update'], check=True)
+                subprocess.run(['sudo', 'apt-get', 'install', '-y', 'docker-ce', 'docker-ce-cli', 'containerd.io'], check=True)
+                
+            elif distro == 'centos':
+                # Установка Docker на CentOS/RHEL/Fedora
+                print("[INFO] Installing Docker on CentOS/RHEL/Fedora...")
+                
+                # Устанавливаем необходимые пакеты
+                subprocess.run(['sudo', 'yum', 'install', '-y', 'yum-utils'], check=True)
+                
+                # Добавляем репозиторий Docker
+                subprocess.run(['sudo', 'yum-config-manager', '--add-repo', 'https://download.docker.com/linux/centos/docker-ce.repo'], check=True)
+                
+                # Устанавливаем Docker
+                subprocess.run(['sudo', 'yum', 'install', '-y', 'docker-ce', 'docker-ce-cli', 'containerd.io'], check=True)
+            
+            # Запускаем Docker сервис
+            subprocess.run(['sudo', 'systemctl', 'start', 'docker'], check=True)
+            subprocess.run(['sudo', 'systemctl', 'enable', 'docker'], check=True)
+            
+            # Добавляем текущего пользователя в группу docker
+            subprocess.run(['sudo', 'usermod', '-aG', 'docker', os.getenv('USER', 'root')], check=True)
+            
+            print("[INFO] Docker installed successfully on Linux")
+            print("[INFO] Please restart your session or run: newgrp docker")
+            return True
+            
+        elif system == "Darwin":
+            # Установка Docker на macOS
+            print("[INFO] Installing Docker Desktop on macOS...")
+            print("[WARNING] Please install Docker Desktop manually from https://www.docker.com/products/docker-desktop")
+            print("[INFO] After installation, restart the script")
+            return False
+            
+        elif system == "Windows":
+            # Установка Docker на Windows
+            print("[INFO] Installing Docker Desktop on Windows...")
+            print("[WARNING] Please install Docker Desktop manually from https://www.docker.com/products/docker-desktop")
+            print("[INFO] After installation, restart the script")
+            return False
+            
+        else:
+            print(f"[ERROR] Unsupported operating system: {system}")
+            return False
+            
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Failed to install Docker: {e}")
+        return False
+    except Exception as e:
+        print(f"[ERROR] Unexpected error during Docker installation: {e}")
+        return False
+
+def check_and_install_docker():
+    """Проверяет и устанавливает Docker если необходимо"""
+    try:
+        # Проверяем, работает ли Docker
+        subprocess.run(['docker', 'ps'], check=True, capture_output=True)
+        print("[INFO] Docker is working correctly")
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("[INFO] Docker not working, attempting installation...")
+        if install_docker():
+            print("[INFO] Docker installation completed. Please restart the script to use Docker.")
+            print("[INFO] Or run: newgrp docker")
+            return False
+        else:
+            print("[ERROR] Docker installation failed")
+            return False
 
 # Универсальная функция для CPU
 def get_cpu_info():
@@ -1389,6 +1507,12 @@ if __name__ == "__main__":
         print("Usage: python installator.py <secret_key>")
         sys.exit(1)
     secret_key = sys.argv[1]
+    
+    # Проверяем и устанавливаем Docker
+    print("[INFO] Checking Docker installation...")
+    if not check_and_install_docker():
+        print("[ERROR] Docker is required but not available. Please install Docker and restart the script.")
+        sys.exit(1)
     
     # Автоматически определяем location по IP адресу
     print("[INFO] Detecting location automatically from IP address...")
