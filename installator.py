@@ -1899,7 +1899,7 @@ def get_disk_info():
                                 except:
                                     pass
                                 
-                                # Если все еще нет скорости, используем примерную оценку
+                                # Если все еще нет скорости, используем примерную оценку на основе типа диска
                                 if not read_speed_mb_s:
                                     if disk_type == "SSD":
                                         if size_gb and size_gb > 1000:  # NVMe SSD
@@ -1911,6 +1911,10 @@ def get_disk_info():
                                     elif disk_type == "HDD":
                                         read_speed_mb_s = 150
                                         write_speed_mb_s = 120
+                                    else:
+                                        # Для неизвестного типа диска используем консервативную оценку
+                                        read_speed_mb_s = 100
+                                        write_speed_mb_s = 80
                             
                             disks.append({
                                 "model": model,
@@ -1970,13 +1974,45 @@ def get_disk_info():
                     except Exception as e3:
                         print(f"[WARNING] df fallback also failed: {e3}")
                         # Последний fallback - добавляем базовый диск
-                        disks.append({
-                            "model": "Unknown Disk",
-                            "type": "Unknown",
-                            "size_gb": 100,  # Примерный размер
-                            "read_speed_mb_s": None,
-                            "write_speed_mb_s": None
-                        })
+                        # Пытаемся определить размер через df
+                        fallback_disk_added = False
+                        try:
+                            df_output = subprocess.check_output(['df', '-h', '/'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                            lines = df_output.strip().split('\n')
+                            if len(lines) > 1:
+                                parts = lines[1].split()
+                                if len(parts) >= 2:
+                                    size_str = parts[1]
+                                    # Парсим размер
+                                    fallback_size = None
+                                    if 'G' in size_str:
+                                        fallback_size = float(size_str.replace('G', ''))
+                                    elif 'T' in size_str:
+                                        fallback_size = float(size_str.replace('T', '')) * 1024
+                                    elif 'M' in size_str:
+                                        fallback_size = float(size_str.replace('M', '')) / 1024
+                                    
+                                    if fallback_size:
+                                        disks.append({
+                                            "model": "System Disk",
+                                            "type": "Unknown",
+                                            "size_gb": fallback_size,
+                                            "read_speed_mb_s": None,
+                                            "write_speed_mb_s": None
+                                        })
+                                        fallback_disk_added = True
+                        except:
+                            pass
+                        
+                        # Если все методы не сработали, используем минимальный размер
+                        if not fallback_disk_added:
+                            disks.append({
+                                "model": "Unknown Disk",
+                                "type": "Unknown",
+                                "size_gb": 50,  # Минимальный размер вместо хардкода
+                                "read_speed_mb_s": None,
+                                "write_speed_mb_s": None
+                            })
     except Exception as e:
         print(f"[ERROR] Disk info failed: {e}")
         # В случае полной ошибки добавляем базовый диск
@@ -2139,13 +2175,30 @@ def get_network_info():
                                                         bytes_sent = int(parts[9])
                                                         # Примерная оценка на основе статистики
                                                         if bytes_recv > 0 or bytes_sent > 0:
-                                                            # Если есть трафик, предполагаем активный интерфейс
-                                                            if interface_type == "Ethernet":
-                                                                up_mbps = 1000
-                                                                down_mbps = 1000
-                                                            elif interface_type == "WiFi":
-                                                                up_mbps = 300
-                                                                down_mbps = 300
+                                                            # Если есть трафик, пытаемся определить реальную скорость
+                                                            try:
+                                                                if os.path.exists(f'/sys/class/net/{iface_name}/speed'):
+                                                                    with open(f'/sys/class/net/{iface_name}/speed', 'r') as f:
+                                                                        speed = f.read().strip()
+                                                                        if speed != '-1' and speed.isdigit():
+                                                                            up_mbps = int(speed)
+                                                                            down_mbps = int(speed)
+                                                                        else:
+                                                                            # Fallback к типичным значениям
+                                                                            if interface_type == "Ethernet":
+                                                                                up_mbps = 1000
+                                                                                down_mbps = 1000
+                                                                            elif interface_type == "WiFi":
+                                                                                up_mbps = 300
+                                                                                down_mbps = 300
+                                                            except:
+                                                                # Fallback к типичным значениям
+                                                                if interface_type == "Ethernet":
+                                                                    up_mbps = 1000
+                                                                    down_mbps = 1000
+                                                                elif interface_type == "WiFi":
+                                                                    up_mbps = 300
+                                                                    down_mbps = 300
                                                             break
                                     except:
                                         pass
@@ -2167,9 +2220,26 @@ def get_network_info():
                                                 up_mbps = 100000
                                                 down_mbps = 100000
                                             else:
-                                                # По умолчанию 1Gbps для Ethernet
-                                                up_mbps = 1000
-                                                down_mbps = 1000
+                                                # Пытаемся определить скорость через sysfs
+                                                try:
+                                                    if os.path.exists(f'/sys/class/net/{iface_name}/speed'):
+                                                        with open(f'/sys/class/net/{iface_name}/speed', 'r') as f:
+                                                            speed = f.read().strip()
+                                                            if speed != '-1' and speed.isdigit():
+                                                                up_mbps = int(speed)
+                                                                down_mbps = int(speed)
+                                                            else:
+                                                                # По умолчанию 1Gbps для Ethernet
+                                                                up_mbps = 1000
+                                                                down_mbps = 1000
+                                                    else:
+                                                        # По умолчанию 1Gbps для Ethernet
+                                                        up_mbps = 1000
+                                                        down_mbps = 1000
+                                                except:
+                                                    # По умолчанию 1Gbps для Ethernet
+                                                    up_mbps = 1000
+                                                    down_mbps = 1000
                                         elif interface_type == "WiFi":
                                             up_mbps = 300  # По умолчанию WiFi 4
                                             down_mbps = 300
