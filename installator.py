@@ -2241,11 +2241,42 @@ def get_network_info():
                                                     up_mbps = 1000
                                                     down_mbps = 1000
                                         elif interface_type == "WiFi":
-                                            up_mbps = 300  # По умолчанию WiFi 4
-                                            down_mbps = 300
+                                            # Пытаемся определить стандарт WiFi
+                                            try:
+                                                iwconfig_output = subprocess.check_output(['iwconfig', iface_name], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                                if '802.11ax' in iwconfig_output or 'Wi-Fi 6' in iwconfig_output:
+                                                    up_mbps = 1200  # WiFi 6
+                                                    down_mbps = 1200
+                                                elif '802.11ac' in iwconfig_output or 'Wi-Fi 5' in iwconfig_output:
+                                                    up_mbps = 866   # WiFi 5
+                                                    down_mbps = 866
+                                                elif '802.11n' in iwconfig_output:
+                                                    up_mbps = 300   # WiFi 4
+                                                    down_mbps = 300
+                                                else:
+                                                    up_mbps = 54    # Старые стандарты
+                                                    down_mbps = 54
+                                            except:
+                                                up_mbps = 300  # По умолчанию WiFi 4
+                                                down_mbps = 300
                                         else:
-                                            up_mbps = 1000  # По умолчанию 1Gbps
-                                            down_mbps = 1000
+                                            # Пытаемся определить тип интерфейса и скорость
+                                            try:
+                                                if os.path.exists(f'/sys/class/net/{iface_name}/speed'):
+                                                    with open(f'/sys/class/net/{iface_name}/speed', 'r') as f:
+                                                        speed = f.read().strip()
+                                                        if speed != '-1' and speed.isdigit():
+                                                            up_mbps = int(speed)
+                                                            down_mbps = int(speed)
+                                                        else:
+                                                            up_mbps = 1000  # По умолчанию 1Gbps
+                                                            down_mbps = 1000
+                                                else:
+                                                    up_mbps = 1000  # По умолчанию 1Gbps
+                                                    down_mbps = 1000
+                                            except:
+                                                up_mbps = 1000  # По умолчанию 1Gbps
+                                                down_mbps = 1000
                                 
                                 networks.append({
                                     "up_mbps": up_mbps,
@@ -2652,8 +2683,19 @@ def get_network_usage():
                             except:
                                 max_speed = 300  # Предполагаем WiFi 4
                         else:
-                            # Для Ethernet используем типичную скорость
-                            max_speed = 1000  # 1 Gbps
+                            # Для Ethernet пытаемся определить реальную скорость
+                            try:
+                                if os.path.exists(f'/sys/class/net/{iface}/speed'):
+                                    with open(f'/sys/class/net/{iface}/speed', 'r') as f:
+                                        speed = f.read().strip()
+                                        if speed != '-1' and speed.isdigit():
+                                            max_speed = int(speed)
+                                        else:
+                                            max_speed = 1000  # 1 Gbps по умолчанию
+                                else:
+                                    max_speed = 1000  # 1 Gbps по умолчанию
+                            except:
+                                max_speed = 1000  # 1 Gbps по умолчанию
                     
                     # Вычисляем процент использования
                     if max_speed and max_speed > 0:
