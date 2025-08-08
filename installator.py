@@ -3071,29 +3071,80 @@ def run_docker_container(task):
     print(f"  GPU: {gpu_limit} GPUs")
     print(f"  Storage: {storage_limit_gb}GB")
     
-    # Собираем docker run команду с оптимальными настройками
-    cmd = [
-        'docker', 'run', '-d', '--rm',
-        '--name', container_name,
-        '-p', f'{ssh_port}:22',  # Пробрасываем порт для ssh
-        '--memory', f'{ram_limit_gb}g',
-        '--cpus', str(cpu_limit),
-        '--shm-size', '2g',  # Увеличиваем shared memory для лучшей производительности
-    ]
+    # Создаем Dockerfile для образа с SSH
+    import tempfile
+    import secrets
+    import string
     
-    # Добавляем GPU если есть
-    if gpu_limit > 0:
-        cmd += ['--gpus', 'all']
-        print(f"[INFO] GPU access enabled for {gpu_limit} GPUs")
+    # Генерируем случайный пароль
+    password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12))
     
-    # Добавляем volume для хранения данных
-    cmd += ['-v', f'/tmp/{container_name}_data:/data']
+    # Создаем временный Dockerfile
+    dockerfile_content = f"""
+FROM {docker_image}
+
+# Устанавливаем SSH сервер
+RUN apt-get update && apt-get install -y openssh-server sudo
+
+# Создаем пользователя root с паролем
+RUN echo 'root:{password}' | chpasswd
+
+# Разрешаем root логин через SSH
+RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+
+# Создаем директорию для SSH
+RUN mkdir /var/run/sshd
+
+# Открываем порт 22
+EXPOSE 22
+
+# Запускаем SSH сервер
+CMD ["/usr/sbin/sshd", "-D"]
+"""
     
-    # Добавляем сетевые настройки для лучшей производительности
-    cmd += ['--network', 'host']  # Используем host network для лучшей производительности
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.dockerfile', delete=False) as f:
+        f.write(dockerfile_content)
+        dockerfile_path = f.name
     
-    # Добавляем образ
-    cmd += [docker_image]
+        # Собираем образ
+        image_name = f"task-{task_id}-image"
+        build_cmd = [
+            'docker', 'build', 
+            '-f', dockerfile_path,
+            '-t', image_name,
+            '.'
+        ]
+        
+        if not fix_docker_permissions():
+            build_cmd = ['sudo'] + build_cmd
+        
+        print(f"[INFO] Building Docker image: {' '.join(build_cmd)}")
+        result = subprocess.run(build_cmd, capture_output=True, text=True, timeout=300)
+        
+        if result.returncode != 0:
+            print(f"[ERROR] Failed to build Docker image: {result.stderr}")
+            return None
+        
+        # Собираем docker run команду с оптимальными настройками
+        cmd = [
+            'docker', 'run', '-d', '--rm',
+            '--name', container_name,
+            '-p', f'{ssh_port}:22',  # Пробрасываем порт для ssh
+            '--memory', f'{ram_limit_gb}g',
+            '--cpus', str(cpu_limit),
+            '--shm-size', '2g',  # Увеличиваем shared memory для лучшей производительности
+        ]
+        
+        # Добавляем GPU если есть
+        if gpu_limit > 0:
+            cmd += ['--gpus', 'all']
+            print(f"[INFO] GPU access enabled for {gpu_limit} GPUs")
+        
+        # Добавляем volume для хранения данных
+        cmd += ['-v', f'/tmp/{container_name}_data:/data']
+        
+        # Добавляем образ
+        cmd += [image_name]
     
     try:
         print(f"[INFO] Starting container with command: {' '.join(cmd)}")
@@ -3137,6 +3188,8 @@ def run_docker_container(task):
             'ssh_port': ssh_port,
             'ssh_host': host_ip,
             'ssh_command': f"ssh -p {ssh_port} root@{host_ip}",
+            'ssh_username': 'root',
+            'ssh_password': password,
             'status': 'running',
             'allocated_resources': {
                 'cpu_cores': cpu_limit,
@@ -3151,6 +3204,12 @@ def run_docker_container(task):
     except Exception as e:
         print(f"[ERROR] Docker run failed: {e}")
         return None
+    finally:
+        # Удаляем временный файл
+        try:
+            os.unlink(dockerfile_path)
+        except:
+            pass
 
 def stop_docker_container(container_info):
     """Останавливает Docker контейнер"""
@@ -3316,6 +3375,8 @@ def send_task_status(agent_id, task_id, secret_key, container_info):
         "ssh_host": container_info['ssh_host'],
         "ssh_port": container_info['ssh_port'],
         "ssh_command": container_info['ssh_command'],
+        "ssh_username": container_info.get('ssh_username', 'root'),
+        "ssh_password": container_info.get('ssh_password', ''),
         "output": f"Container {container_info['container_name']} started successfully. SSH ready on {container_info['ssh_host']}:{container_info['ssh_port']}"
     }
     try:
@@ -3323,6 +3384,9 @@ def send_task_status(agent_id, task_id, secret_key, container_info):
         print(f"[INFO] Task status updated: {response.status_code}")
         if response.status_code == 200:
             print(f"[INFO] SSH connection details sent to server")
+            print(f"[INFO] SSH Command: {container_info['ssh_command']}")
+            print(f"[INFO] Username: {container_info.get('ssh_username', 'root')}")
+            print(f"[INFO] Password: {container_info.get('ssh_password', '')}")
     except Exception as e:
         print(f"[ERROR] Failed to update task status: {e}")
 
