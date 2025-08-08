@@ -676,8 +676,8 @@ def install_nvidia_tools():
             # Устанавливаем PyTorch CUDA
             subprocess.run([sys.executable, '-m', 'pip', 'install', 'torch', 'torchvision', 'torchaudio', '--index-url', 'https://download.pytorch.org/whl/cu118'], check=True)
             
-            # Устанавливаем TensorFlow GPU
-            subprocess.run([sys.executable, '-m', 'pip', 'install', 'tensorflow[gpu]'], check=True)
+            # Устанавливаем TensorFlow (GPU поддержка включена по умолчанию в новых версиях)
+            subprocess.run([sys.executable, '-m', 'pip', 'install', 'tensorflow'], check=True)
             
         print("[INFO] NVIDIA tools installed successfully")
         return True
@@ -934,6 +934,8 @@ def get_ram_info():
 def get_gpu_info():
     gpus = []
     system = platform.system()
+    print(f"[DEBUG] Detected system: {system}")
+    
     try:
         if system == "Darwin":
             sp = subprocess.check_output(['system_profiler', 'SPDisplaysDataType']).decode()
@@ -972,9 +974,11 @@ def get_gpu_info():
                     })
         elif system == "Linux":
             # Улучшенное определение GPU для Linux с поддержкой множественных GPU
+            print("[DEBUG] Detecting Linux GPUs...")
             try:
                 # Сначала попробуем nvidia-smi для NVIDIA GPU
-                nvidia_output = subprocess.check_output(['nvidia-smi', '-L'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                print("[DEBUG] Trying nvidia-smi -L...")
+                nvidia_output = subprocess.check_output(['nvidia-smi', '-L'], stderr=subprocess.DEVNULL, timeout=10).decode(errors='ignore')
                 for line in nvidia_output.strip().split('\n'):
                     if line:
                         # Парсим строку вида "GPU 0: NVIDIA GeForce RTX 3080 (UUID: ...)"
@@ -990,8 +994,9 @@ def get_gpu_info():
                             tflops = None
                             bandwidth_gbps = None
                             try:
+                                print(f"[DEBUG] Getting detailed info for GPU {gpu_index}...")
                                 # Получаем информацию для конкретной GPU по индексу
-                                nvidia_detailed = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.total,driver_version', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                nvidia_detailed = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.total,driver_version', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                 if nvidia_detailed.strip():
                                     parts = nvidia_detailed.strip().split(',')
                                     if len(parts) >= 2:
@@ -1016,7 +1021,7 @@ def get_gpu_info():
                                         else:
                                             # Если не нашли в driver version, попробуем получить через nvidia-smi
                                             try:
-                                                cuda_output = subprocess.check_output(['nvidia-smi', '-i', str(gpu_index)], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                                cuda_output = subprocess.check_output(['nvidia-smi', '-i', str(gpu_index)], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                                 cuda_match = re.search(r'CUDA Version:\s+(\d+\.\d+)', cuda_output)
                                                 if cuda_match:
                                                     cuda_version = cuda_match.group(1)
@@ -1025,7 +1030,7 @@ def get_gpu_info():
                                         # Получаем количество CUDA ядер через nvidia-smi для конкретной GPU
                                         try:
                                              # Попробуем получить количество CUDA ядер напрямую для конкретной GPU
-                                             cuda_cores_output = subprocess.check_output(['nvidia-smi', '--query-gpu=compute_cap,sm_count', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                             cuda_cores_output = subprocess.check_output(['nvidia-smi', '--query-gpu=compute_cap,sm_count', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                              if cuda_cores_output.strip():
                                                  parts = cuda_cores_output.strip().split(',')
                                                  if len(parts) >= 2:
@@ -1056,7 +1061,7 @@ def get_gpu_info():
                                         # Получаем информацию о памяти и производительности для конкретной GPU
                                         try:
                                             # Получаем memory clock и bus width для расчета bandwidth
-                                            memory_info = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.clock,memory.bus_width', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                            memory_info = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.clock,memory.bus_width', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                             if memory_info.strip():
                                                 parts = memory_info.strip().split(',')
                                                 if len(parts) >= 2:
@@ -1070,15 +1075,19 @@ def get_gpu_info():
                                         # Получаем TFLOPS через nvidia-smi для конкретной GPU
                                         try:
                                             # Попробуем получить через nvidia-smi --query-gpu=clocks.current.graphics
-                                            clock_info = subprocess.check_output(['nvidia-smi', '--query-gpu=clocks.current.graphics', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                            clock_info = subprocess.check_output(['nvidia-smi', '--query-gpu=clocks.current.graphics', '--format=csv,noheader', '-i', str(gpu_index)], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                             if clock_info.strip() and cuda_cores:
                                                 graphics_clock_mhz = float(clock_info.strip())
                                                 # Оценка TFLOPS: (cuda_cores * graphics_clock * 2) / 1000000
                                                 tflops = (cuda_cores * graphics_clock_mhz * 2) / 1000000
-                                        except:
-                                            pass
-                            except:
-                                pass
+                                        except subprocess.TimeoutExpired:
+                                            print(f"[WARNING] Timeout getting clock info for GPU {gpu_index}")
+                                        except Exception as e:
+                                            print(f"[WARNING] Error getting clock info for GPU {gpu_index}: {e}")
+                            except subprocess.TimeoutExpired:
+                                print(f"[WARNING] Timeout getting detailed info for GPU {gpu_index}")
+                            except Exception as e:
+                                print(f"[WARNING] Error getting detailed info for GPU {gpu_index}: {e}")
                             
                         gpus.append({
                             "model": model,
@@ -1090,12 +1099,15 @@ def get_gpu_info():
                             "vendor": "NVIDIA",
                             "count": 1
                         })
-            except:
-                pass
+            except subprocess.TimeoutExpired:
+                print("[WARNING] Timeout getting NVIDIA GPU list")
+            except Exception as e:
+                print(f"[WARNING] Error getting NVIDIA GPU list: {e}")
             
             # Попробуем lspci для всех GPU (AMD, Intel, другие)
             try:
-                lspci_output = subprocess.check_output(['lspci', '-nn']).decode(errors='ignore')
+                print("[DEBUG] Trying lspci for other GPUs...")
+                lspci_output = subprocess.check_output(['lspci', '-nn'], timeout=5).decode(errors='ignore')
                 for line in lspci_output.split('\n'):
                     if 'VGA compatible controller' in line or '3D controller' in line or 'Display controller' in line:
                         # Правильно парсим строку lspci
@@ -1158,11 +1170,13 @@ def get_gpu_info():
                             if vendor == "AMD":
                                 try:
                                     # Попробуем получить информацию через rocm-smi
-                                    rocm_output = subprocess.check_output(['rocm-smi', '--showproductname'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                                    rocm_output = subprocess.check_output(['rocm-smi', '--showproductname'], stderr=subprocess.DEVNULL, timeout=5).decode(errors='ignore')
                                     if rocm_output.strip():
                                         model = rocm_output.strip()
-                                except:
-                                    pass
+                                except subprocess.TimeoutExpired:
+                                    print("[WARNING] Timeout getting AMD GPU info via rocm-smi")
+                                except Exception as e:
+                                    print(f"[WARNING] Error getting AMD GPU info via rocm-smi: {e}")
                                 
                                 # Попробуем получить VRAM через sysfs
                                 try:
@@ -1284,12 +1298,17 @@ def get_gpu_info():
                                     "vendor": vendor,
                                     "count": 1
                                 })
+            except subprocess.TimeoutExpired:
+                print("[WARNING] Timeout getting GPU info via lspci")
             except Exception as e:
                 print(f"[WARNING] lspci parsing error: {e}")
-                pass
                         
+    except subprocess.TimeoutExpired:
+        print("[WARNING] Timeout in GPU detection")
     except Exception as e:
         print(f"[ERROR] GPU info failed: {e}")
+    
+    print(f"[DEBUG] GPU detection completed. Found {len(gpus)} GPUs")
     return gpus
 
 # Универсальная функция для дисков
