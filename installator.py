@@ -1223,6 +1223,7 @@ def get_ram_info():
         print(f"[ERROR] RAM info failed: {e}")
     return total_ram_gb, ram_type
 
+
 # Универсальная функция для GPU
 def get_gpu_info():
     gpus = []
