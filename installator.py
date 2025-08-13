@@ -4007,9 +4007,9 @@ def send_heartbeat(agent_id, secret_key):
                     gpu_usage[f"gpu{gpu_id}"] = usage
         
         # Получаем информацию о диске
-        disk_usage = 0
+        disk_usage = {}
         try:
-            disk_usage = psutil.disk_usage('/').percent
+            disk_usage = {"/": psutil.disk_usage('/').percent}
         except:
             pass
         
@@ -4022,7 +4022,7 @@ def send_heartbeat(agent_id, secret_key):
             "status": "online",
             "gpu_usage": gpu_usage,
             "cpu_usage": cpu_usage,
-            "ram_usage": memory_usage,
+            "memory_usage": memory_usage,
             "disk_usage": disk_usage,
             "network_usage": {
                 "up_mbps": net_up_mbps,
