@@ -3439,7 +3439,7 @@ def run_docker_container_simple(task):
     cmd += [
         docker_image,
         'bash', '-c',
-        f"apt-get update && apt-get install -y openssh-server sudo nano vim curl wget git python3 python3-pip && "
+        f"DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server sudo nano vim curl wget git python3 python3-pip tzdata && "
         f"mkdir /var/run/sshd && "
         f"useradd -m -s /bin/bash {ssh_username} && "
         f"echo '{ssh_username}:{ssh_password}' | chpasswd && "
