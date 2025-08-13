@@ -2601,29 +2601,23 @@ def get_network_info():
 def get_ip_address():
     """Получает реальный IP адрес для SSH подключения"""
     try:
-        # Метод 1: Для Linux - попробуем получить IP через сетевые интерфейсы (приоритет)
+        # Метод 1: Для Linux - используем ip route get для получения реального IP
         if platform.system() == "Linux":
             try:
-                # Получаем список всех сетевых интерфейсов
-                ip_output = subprocess.check_output(['ip', '-4', 'addr', 'show'], stderr=subprocess.DEVNULL).decode(errors='ignore')
+                # Получаем IP через ip route get - самый надежный способ
+                route_output = subprocess.check_output(['ip', 'route', 'get', '1.1.1.1'], stderr=subprocess.DEVNULL).decode(errors='ignore')
                 
-                # Ищем IP адреса, исключая localhost
-                for line in ip_output.split('\n'):
-                    if 'inet ' in line:
-                        # Парсим строку вида "inet 192.168.1.100/24 brd 192.168.1.255 scope global dynamic noprefixroute eth0"
-                        parts = line.strip().split()
-                        for i, part in enumerate(parts):
-                            if part == 'inet':
-                                if i + 1 < len(parts):
-                                    ip_with_mask = parts[i + 1]
-                                    ip = ip_with_mask.split('/')[0]
-                                    
-                                    # Проверяем, что это не localhost
-                                    if ip != '127.0.0.1':
-                                        print(f"[DEBUG] Found IP address: {ip}")
-                                        return ip
+                # Парсим строку вида "1.1.1.1 via 66.151.40.1 dev ens1 src 66.151.40.8 uid 0"
+                if 'src ' in route_output:
+                    # Ищем src IP адрес
+                    import re
+                    src_match = re.search(r'src (\d+\.\d+\.\d+\.\d+)', route_output)
+                    if src_match:
+                        ip = src_match.group(1)
+                        print(f"[DEBUG] Found IP address via route: {ip}")
+                        return ip
             except Exception as e:
-                print(f"[DEBUG] Failed to get IP from network interfaces: {e}")
+                print(f"[DEBUG] Failed to get IP from route: {e}")
                 pass
         try:
             response = requests.get('https://api.ipify.org', timeout=5)
@@ -3439,7 +3433,7 @@ def run_docker_container_simple(task):
     cmd += [
         docker_image,
         'bash', '-c',
-        f"DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server sudo nano vim curl wget git python3 python3-pip tzdata && "
+        f"DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server sudo && "
         f"mkdir /var/run/sshd && "
         f"useradd -m -s /bin/bash {ssh_username} && "
         f"echo '{ssh_username}:{ssh_password}' | chpasswd && "
