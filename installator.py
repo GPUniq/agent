@@ -3202,6 +3202,125 @@ def wait_for_ssh_ready(host, port, timeout=60):
         time.sleep(2)
     return False
 
+def run_docker_container_simple(task):
+    """Простая версия создания Docker контейнера с SSH согласно документации"""
+    import subprocess
+    
+    # Получаем данные задачи
+    task_data = task.get('task_data', {})
+    container_info = task.get('container_info', {})
+    
+    # Получаем docker_image из task_data
+    docker_image = task_data.get('docker_image')
+    if not docker_image:
+        print("[ERROR] No docker_image specified in task")
+        return None
+    
+    # Получаем SSH credentials из container_info
+    ssh_username = container_info.get('ssh_username')
+    ssh_password = container_info.get('ssh_password')
+    ssh_port = container_info.get('ssh_port')
+    ssh_host = container_info.get('ssh_host')
+    
+    if not all([ssh_username, ssh_password, ssh_port]):
+        print("[ERROR] Missing SSH credentials in container_info")
+        return None
+    
+    print(f"[INFO] Using SSH credentials from task:")
+    print(f"  Username: {ssh_username}")
+    print(f"  Port: {ssh_port}")
+    print(f"  Host: {ssh_host}")
+    
+    # Получаем выделенные ресурсы из задачи
+    gpus_allocated = task_data.get('gpus_allocated', {})
+    cpus_allocated = task_data.get('cpus_allocated', {})
+    ram_allocated = task_data.get('ram_allocated', 0)
+    
+    # Рассчитываем лимиты ресурсов
+    cpu_limit = cpus_allocated.get('cores') if cpus_allocated else 1
+    ram_limit_gb = ram_allocated if ram_allocated else 2
+    gpu_limit = gpus_allocated.get('count') if gpus_allocated else 0
+    
+    task_id = task.get('id', int(time.time()))
+    container_name = f"task_{task_id}_{ssh_username}"
+    
+    # Собираем docker run команду согласно документации
+    cmd = [
+        'docker', 'run', '-d', '--rm',
+        '--name', container_name,
+        '-p', f'{ssh_port}:22',
+        '--memory', f'{ram_limit_gb}g',
+        '--cpus', str(cpu_limit)
+    ]
+    
+    # Добавляем GPU если есть
+    if gpu_limit > 0:
+        cmd += ['--gpus', 'all']
+        print(f"[INFO] GPU access enabled for {gpu_limit} GPUs")
+    
+    # Добавляем образ и команду запуска
+    cmd += [
+        docker_image,
+        'bash', '-c',
+        f"apt-get update && apt-get install -y openssh-server sudo && "
+        f"mkdir /var/run/sshd && "
+        f"useradd -m -s /bin/bash {ssh_username} && "
+        f"echo '{ssh_username}:{ssh_password}' | chpasswd && "
+        f"usermod -aG sudo {ssh_username} && "
+        f"sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && "
+        f"/usr/sbin/sshd -D"
+    ]
+    
+    print(f"[INFO] Starting container with command: {' '.join(cmd)}")
+    
+    # Проверяем права Docker
+    use_sudo = False
+    try:
+        result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=5)
+        if result.returncode != 0:
+            use_sudo = True
+    except:
+        use_sudo = True
+    
+    if use_sudo:
+        cmd = ['sudo'] + cmd
+    
+    try:
+        container_id = subprocess.check_output(cmd, timeout=60).decode().strip()
+        print(f"[INFO] Container started with ID: {container_id}")
+        
+        # Ожидаем готовности SSH
+        print(f"[INFO] Waiting for SSH service to be ready on port {ssh_port}...")
+        if wait_for_ssh_ready('localhost', ssh_port):
+            print(f"[INFO] SSH service is ready on port {ssh_port}")
+        else:
+            print(f"[WARNING] SSH service not ready within timeout on port {ssh_port}")
+        
+        return {
+            'container_id': container_id,
+            'container_name': container_name,
+            'ssh_port': ssh_port,
+            'ssh_host': ssh_host,
+            'ssh_command': container_info.get('ssh_command', f"ssh {ssh_username}@{ssh_host} -p {ssh_port}"),
+            'ssh_username': ssh_username,
+            'ssh_password': ssh_password,
+            'status': 'running',
+            'allocated_resources': {
+                'cpu_cores': cpu_limit,
+                'ram_gb': ram_limit_gb,
+                'gpu_count': gpu_limit,
+                'storage_gb': 20,
+                'gpu_support': gpu_limit > 0
+            }
+        }
+        
+    except subprocess.TimeoutExpired:
+        print("[ERROR] Docker operation timed out")
+        return None
+    except Exception as e:
+        print(f"[ERROR] Docker operation failed: {e}")
+        return None
+
 def run_docker_container(task):
     import subprocess
     import secrets
@@ -3612,7 +3731,8 @@ def poll_for_tasks(agent_id, secret_key):
                         'container_info': container_info
                     }
                     
-                    container_info = run_docker_container(full_task)
+                    # Используем простую версию создания контейнера
+                    container_info = run_docker_container_simple(full_task)
                     if container_info:
                         print(f"[INFO] Docker container started successfully:")
                         print(f"  Container ID: {container_info['container_id']}")
