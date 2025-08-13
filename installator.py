@@ -3416,9 +3416,9 @@ def run_docker_container_simple(task):
                             gpu_test_success = True
                 except subprocess.TimeoutExpired:
                     print("[WARNING] GPU test timed out, assuming GPU access is available")
-                    # Если тест таймаутит, предполагаем что GPU доступен и используем --gpus all
-                    cmd += ['--gpus', 'all']
-                    print(f"[INFO] Using --gpus all flag for GPU access (timeout fallback)")
+                    # Если тест таймаутит, предполагаем что GPU доступен и используем --runtime=nvidia
+                    cmd += ['--runtime=nvidia']
+                    print(f"[INFO] Using --runtime=nvidia flag for GPU access (timeout fallback)")
                     gpu_test_success = True
                 except Exception as e:
                     print(f"[WARNING] GPU test failed: {e}")
@@ -3431,8 +3431,8 @@ def run_docker_container_simple(task):
                     try:
                         if install_nvidia_container_runtime():
                             # После установки предполагаем что GPU доступен
-                            cmd += ['--gpus', 'all']
-                            print(f"[INFO] GPU access installed, using --gpus all")
+                            cmd += ['--runtime=nvidia']
+                            print(f"[INFO] GPU access installed, using --runtime=nvidia")
                         else:
                             raise Exception("Failed to install NVIDIA Container Runtime")
                     except Exception as e:
