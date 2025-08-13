@@ -3175,15 +3175,33 @@ def get_running_containers_resources():
                 stats_result = subprocess.run(stats_cmd, capture_output=True, text=True, timeout=5)
                 if stats_result.returncode == 0 and stats_result.stdout.strip():
                     mem_usage = stats_result.stdout.strip()
-                    # Парсим строку вида "1.234GiB / 2.000GiB"
-                    if 'GiB' in mem_usage:
-                        mem_parts = mem_usage.split('/')[0].strip()
-                        mem_gb = float(mem_parts.replace('GiB', ''))
-                        total_ram_gb += mem_gb
-                    elif 'MiB' in mem_usage:
-                        mem_parts = mem_usage.split('/')[0].strip()
-                        mem_mb = float(mem_parts.replace('MiB', ''))
-                        total_ram_gb += mem_mb / 1024
+                    # Парсим строку вида "1.234GiB / 2.000GiB" или "31.22MiB / 2.000GiB"
+                    try:
+                        if 'GiB' in mem_usage:
+                            mem_parts = mem_usage.split('/')[0].strip()
+                            mem_gb = float(mem_parts.replace('GiB', ''))
+                            total_ram_gb += mem_gb
+                        elif 'MiB' in mem_usage:
+                            mem_parts = mem_usage.split('/')[0].strip()
+                            mem_mb = float(mem_parts.replace('MiB', ''))
+                            total_ram_gb += mem_mb / 1024
+                        elif 'KB' in mem_usage:
+                            mem_parts = mem_usage.split('/')[0].strip()
+                            mem_kb = float(mem_parts.replace('KB', ''))
+                            total_ram_gb += mem_kb / (1024 * 1024)
+                        elif 'B' in mem_usage:
+                            mem_parts = mem_usage.split('/')[0].strip()
+                            mem_b = float(mem_parts.replace('B', ''))
+                            total_ram_gb += mem_b / (1024 * 1024 * 1024)
+                        else:
+                            # Попробуем парсить как число (предполагаем байты)
+                            mem_parts = mem_usage.split('/')[0].strip()
+                            mem_bytes = float(mem_parts)
+                            total_ram_gb += mem_bytes / (1024 * 1024 * 1024)
+                    except (ValueError, IndexError) as parse_error:
+                        print(f"[WARNING] Could not parse memory usage '{mem_usage}' for container {container_name}: {parse_error}")
+                        # Используем примерную оценку
+                        total_ram_gb += 1.0  # Примерно 1GB на контейнер
             except Exception as e:
                 print(f"[WARNING] Failed to get memory usage for container {container_name}: {e}")
         
@@ -3371,43 +3389,57 @@ def run_docker_container_simple(task):
             if result.returncode == 0:
                 print("[INFO] nvidia-container-cli is working")
                 
-                # Проверяем, какой флаг работает
-                test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi', '--list-gpus']
-                test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+                # Проверяем, какой флаг работает - используем более быстрый тест
+                print("[INFO] Testing GPU access with --gpus all...")
+                
+                # Сначала попробуем с уже загруженным образом или быстрым образом
+                test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'nvidia/cuda:11.0-base', 'nvidia-smi', '--list-gpus']
+                test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)
                 
                 if test_result.returncode == 0:
                     cmd += ['--gpus', 'all']
                     print(f"[INFO] Using --gpus all flag for GPU access")
                 else:
                     # Пробуем --runtime=nvidia
-                    test_cmd = ['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi', '--list-gpus']
-                    test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+                    print("[INFO] Testing GPU access with --runtime=nvidia...")
+                    test_cmd = ['docker', 'run', '--rm', '--runtime=nvidia', 'nvidia/cuda:11.0-base', 'nvidia-smi', '--list-gpus']
+                    test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)
                     
                     if test_result.returncode == 0:
                         cmd += ['--runtime=nvidia']
                         print(f"[INFO] Using --runtime=nvidia flag for GPU access")
                     else:
-                        print("[ERROR] Neither --gpus all nor --runtime=nvidia works!")
-                        print(f"[ERROR] --gpus all error: {test_result.stderr}")
+                        # Попробуем с Ubuntu образом (может быть уже загружен)
+                        print("[INFO] Testing GPU access with Ubuntu image...")
+                        test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'bash', '-c', 'nvidia-smi --list-gpus || echo "nvidia-smi not available"']
+                        test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)
                         
-                        # Попробуем установить/обновить nvidia-container-toolkit
-                        print("[INFO] Attempting to install/update NVIDIA Container Runtime...")
-                        try:
-                            if install_nvidia_container_runtime():
-                                # Проверяем снова
-                                test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi', '--list-gpus']
-                                test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
-                                
-                                if test_result.returncode == 0:
-                                    cmd += ['--gpus', 'all']
-                                    print(f"[INFO] GPU access fixed, using --gpus all")
+                        if test_result.returncode == 0 and 'nvidia-smi not available' not in test_result.stdout:
+                            cmd += ['--gpus', 'all']
+                            print(f"[INFO] Using --gpus all flag for GPU access (Ubuntu test)")
+                        else:
+                            print("[ERROR] Neither --gpus all nor --runtime=nvidia works!")
+                            print(f"[ERROR] --gpus all error: {test_result.stderr}")
+                            print(f"[ERROR] --runtime=nvidia error: {test_result.stderr}")
+                            
+                            # Попробуем установить/обновить nvidia-container-toolkit
+                            print("[INFO] Attempting to install/update NVIDIA Container Runtime...")
+                            try:
+                                if install_nvidia_container_runtime():
+                                    # Проверяем снова
+                                    test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'nvidia/cuda:11.0-base', 'nvidia-smi', '--list-gpus']
+                                    test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)
+                                    
+                                    if test_result.returncode == 0:
+                                        cmd += ['--gpus', 'all']
+                                        print(f"[INFO] GPU access fixed, using --gpus all")
+                                    else:
+                                        raise Exception("GPU access still not working after installation")
                                 else:
-                                    raise Exception("GPU access still not working after installation")
-                            else:
-                                raise Exception("Failed to install NVIDIA Container Runtime")
-                        except Exception as e:
-                            print(f"[ERROR] Failed to fix GPU access: {e}")
-                            raise Exception("GPU access is required but not available")
+                                    raise Exception("Failed to install NVIDIA Container Runtime")
+                            except Exception as e:
+                                print(f"[ERROR] Failed to fix GPU access: {e}")
+                                raise Exception("GPU access is required but not available")
             else:
                 print(f"[ERROR] nvidia-container-cli failed: {result.stderr}")
                 raise Exception("nvidia-container-cli not working")
