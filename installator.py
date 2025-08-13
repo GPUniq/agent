@@ -2601,33 +2601,13 @@ def get_network_info():
 def get_ip_address():
     """Получает реальный IP адрес для SSH подключения"""
     try:
-        # Метод 1: Попробуем получить внешний IP через внешний сервис
-        try:
-            response = requests.get('https://api.ipify.org', timeout=5)
-            if response.status_code == 200:
-                external_ip = response.text.strip()
-                if external_ip and external_ip != '127.0.0.1':
-                    return external_ip
-        except:
-            pass
-        
-        # Метод 2: Попробуем другой сервис
-        try:
-            response = requests.get('https://ifconfig.me', timeout=5)
-            if response.status_code == 200:
-                external_ip = response.text.strip()
-                if external_ip and external_ip != '127.0.0.1':
-                    return external_ip
-        except:
-            pass
-        
-        # Метод 3: Для Linux - попробуем получить IP через сетевые интерфейсы
+        # Метод 1: Для Linux - попробуем получить IP через сетевые интерфейсы (приоритет)
         if platform.system() == "Linux":
             try:
                 # Получаем список всех сетевых интерфейсов
                 ip_output = subprocess.check_output(['ip', '-4', 'addr', 'show'], stderr=subprocess.DEVNULL).decode(errors='ignore')
                 
-                # Ищем IP адреса, исключая localhost и внутренние сети
+                # Ищем IP адреса, исключая localhost
                 for line in ip_output.split('\n'):
                     if 'inet ' in line:
                         # Парсим строку вида "inet 192.168.1.100/24 brd 192.168.1.255 scope global dynamic noprefixroute eth0"
@@ -2638,26 +2618,35 @@ def get_ip_address():
                                     ip_with_mask = parts[i + 1]
                                     ip = ip_with_mask.split('/')[0]
                                     
-                                    # Проверяем, что это не localhost и не внутренний IP
-                                    if (ip != '127.0.0.1' and 
-                                        not ip.startswith('10.') and 
-                                        not ip.startswith('172.16.') and 
-                                        not ip.startswith('172.17.') and 
-                                        not ip.startswith('172.18.') and 
-                                        not ip.startswith('172.19.') and 
-                                        not ip.startswith('172.2') and 
-                                        not ip.startswith('172.3') and 
-                                        not ip.startswith('192.168.')):
+                                    # Проверяем, что это не localhost
+                                    if ip != '127.0.0.1':
+                                        print(f"[DEBUG] Found IP address: {ip}")
                                         return ip
-                                    
-                                    # Если это локальный IP, но не localhost, тоже можем использовать
-                                    if (ip != '127.0.0.1' and 
-                                        (ip.startswith('192.168.') or 
-                                         ip.startswith('10.') or 
-                                         ip.startswith('172.'))):
-                                        return ip
-            except:
+            except Exception as e:
+                print(f"[DEBUG] Failed to get IP from network interfaces: {e}")
                 pass
+        try:
+            response = requests.get('https://api.ipify.org', timeout=5)
+            if response.status_code == 200:
+                external_ip = response.text.strip()
+                if external_ip and external_ip != '127.0.0.1':
+                    print(f"[DEBUG] Found external IP: {external_ip}")
+                    return external_ip
+        except Exception as e:
+            print(f"[DEBUG] Failed to get IP from api.ipify.org: {e}")
+            pass
+        
+        # Метод 3: Попробуем другой сервис
+        try:
+            response = requests.get('https://ifconfig.me', timeout=5)
+            if response.status_code == 200:
+                external_ip = response.text.strip()
+                if external_ip and external_ip != '127.0.0.1':
+                    print(f"[DEBUG] Found external IP: {external_ip}")
+                    return external_ip
+        except Exception as e:
+            print(f"[DEBUG] Failed to get IP from ifconfig.me: {e}")
+            pass
         
         # Метод 4: Для macOS
         elif platform.system() == "Darwin":
