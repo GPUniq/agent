@@ -193,7 +193,6 @@ def check_docker_gpu_support():
                 except:
                     pass
                 
-                # Проверяем, работает ли --runtime=nvidia
                 try:
                     result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
                                           capture_output=True, text=True, timeout=30)
