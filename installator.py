@@ -3405,19 +3405,13 @@ def run_docker_container_simple(task):
             print(f"[ERROR] Docker stderr: {result.stderr}")
             print(f"[ERROR] Docker stdout: {result.stdout}")
             
-            # Попробуем запустить без GPU если была ошибка с GPU
-            if gpu_limit > 0 and ('nvidia' in result.stderr.lower() or 'gpu' in result.stderr.lower()):
-                print(f"[INFO] Trying to start container without GPU access...")
-                cmd_no_gpu = [arg for arg in cmd if arg not in ['--gpus', 'all', '--runtime=nvidia']]
-                result_no_gpu = subprocess.run(cmd_no_gpu, capture_output=True, text=True, timeout=60)
-                
-                if result_no_gpu.returncode == 0:
-                    container_id = result_no_gpu.stdout.strip()
-                    print(f"[INFO] Container started without GPU access, ID: {container_id}")
-                    gpu_limit = 0  # Обновляем информацию о GPU
-                else:
-                    print(f"[ERROR] Docker command without GPU also failed: {result_no_gpu.stderr}")
-                    return None
+            # Если GPU обязателен, не пытаемся запускать без него
+            if gpu_limit > 0:
+                print(f"[ERROR] GPU access is required but Docker command failed")
+                print(f"[ERROR] Please check NVIDIA Container Runtime installation")
+                print(f"[ERROR] Try running: sudo apt-get install nvidia-container-toolkit")
+                print(f"[ERROR] Then restart Docker: sudo systemctl restart docker")
+                return None
             else:
                 return None
         else:
