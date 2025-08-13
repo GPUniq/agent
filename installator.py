@@ -2820,22 +2820,12 @@ def get_system_info():
     hardware_info = get_hardware_info()
     print("[DEBUG] Hardware info collected")
     
-    print("[DEBUG] Getting available ports range...")
-    try:
-        available_ports_start, available_ports_end = get_available_ports_range()
-        print(f"[DEBUG] Available ports: {available_ports_start}-{available_ports_end}")
-    except Exception as e:
-        print(f"[WARNING] Failed to get available ports range: {e}")
-        available_ports_start, available_ports_end = None, None
-    
     return {
         "hostname": hostname,
         "ip_address": ip_address,
         "total_ram_gb": total_ram_gb,
         "ram_type": ram_type,
-        "hardware_info": hardware_info,
-        "available_ports_start": available_ports_start,
-        "available_ports_end": available_ports_end
+        "hardware_info": hardware_info
     }
 
 # === Функция отправки данных на сервер ===
@@ -3211,50 +3201,7 @@ def get_available_port(start_port=21234, max_attempts=100):
             continue
     return None
 
-def get_available_ports_range(start_port=10000, end_port=65535, max_range_size=1000):
-    """Определяет диапазон доступных портов для агента"""
-    import socket
-    
-    # Проверяем, что диапазон валидный
-    if start_port >= end_port or start_port < 1 or end_port > 65535:
-        print(f"[WARNING] Invalid port range: {start_port}-{end_port}")
-        return None, None
-    
-    # Ищем свободный диапазон портов
-    available_start = None
-    available_end = None
-    
-    for port in range(start_port, end_port - max_range_size + 1):
-        # Проверяем, свободен ли текущий порт
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(('localhost', port))
-                s.close()
-                
-                # Если порт свободен, проверяем следующий диапазон
-                range_available = True
-                for check_port in range(port + 1, port + max_range_size):
-                    try:
-                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s2:
-                            s2.bind(('localhost', check_port))
-                            s2.close()
-                    except OSError:
-                        range_available = False
-                        break
-                
-                if range_available:
-                    available_start = port
-                    available_end = port + max_range_size - 1
-                    break
-        except OSError:
-            continue
-    
-    if available_start and available_end:
-        print(f"[INFO] Found available port range: {available_start}-{available_end}")
-        return available_start, available_end
-    else:
-        print(f"[WARNING] No available port range found in {start_port}-{end_port}")
-        return None, None
+
 
 def wait_for_ssh_ready(host, port, timeout=60):
     """Ждет, пока SSH сервис будет готов к подключению"""
@@ -3381,7 +3328,7 @@ def run_docker_container_simple(task):
                 try:
                     # Быстрый тест - попробуем запустить простую команду
                     test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'echo', 'GPU test successful']
-                    test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+                    test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)  # Увеличиваем таймаут
                     
                     if test_result.returncode == 0:
                         cmd += ['--gpus', 'all']
@@ -3391,18 +3338,33 @@ def run_docker_container_simple(task):
                         # Попробуем --runtime=nvidia
                         print("[INFO] Testing GPU access with --runtime=nvidia...")
                         test_cmd = ['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'echo', 'GPU test successful']
-                        test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+                        test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=30)  # Увеличиваем таймаут
                         
                         if test_result.returncode == 0:
                             cmd += ['--runtime=nvidia']
                             print(f"[INFO] Using --runtime=nvidia flag for GPU access")
                             gpu_test_success = True
                 except subprocess.TimeoutExpired:
-                    print("[WARNING] GPU test timed out, assuming GPU access is available")
-                    # Если тест таймаутит, предполагаем что GPU доступен и используем --runtime=nvidia
-                    cmd += ['--runtime=nvidia']
-                    print(f"[INFO] Using --runtime=nvidia flag for GPU access (timeout fallback)")
-                    gpu_test_success = True
+                    print("[WARNING] GPU test timed out, trying alternative approach...")
+                    # Если тест таймаутит, попробуем использовать уже загруженный образ
+                    try:
+                        test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'hello-world', 'echo', 'GPU test successful']
+                        test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=15)
+                        
+                        if test_result.returncode == 0:
+                            cmd += ['--gpus', 'all']
+                            print(f"[INFO] Using --gpus all flag for GPU access (timeout fallback)")
+                            gpu_test_success = True
+                        else:
+                            # Последний fallback - предполагаем что GPU доступен
+                            cmd += ['--gpus', 'all']
+                            print(f"[INFO] Using --gpus all flag for GPU access (final fallback)")
+                            gpu_test_success = True
+                    except:
+                        # Финальный fallback
+                        cmd += ['--gpus', 'all']
+                        print(f"[INFO] Using --gpus all flag for GPU access (emergency fallback)")
+                        gpu_test_success = True
                 except Exception as e:
                     print(f"[WARNING] GPU test failed: {e}")
                 
@@ -3443,9 +3405,7 @@ def run_docker_container_simple(task):
         f"/usr/sbin/sshd -D"
     ]
     
-    print(f"[INFO] Starting container with command: {' '.join(cmd)}")
-    
-    # Проверяем права Docker
+    # Проверяем права Docker ПЕРЕД сборкой команды
     use_sudo = False
     try:
         result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=5)
@@ -3456,6 +3416,8 @@ def run_docker_container_simple(task):
     
     if use_sudo:
         cmd = ['sudo'] + cmd
+    
+    print(f"[INFO] Starting container with command: {' '.join(cmd)}")
     
     try:
         print(f"[INFO] Executing Docker command...")
