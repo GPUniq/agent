@@ -3216,86 +3216,55 @@ def run_docker_container(task):
     
     print(f"[INFO] Available resources: {json.dumps(available_resources, indent=2)}")
     
-    # Получаем docker_image из task_data
+    # Получаем данные задачи
     task_data = task.get('task_data', {})
+    container_info = task.get('container_info', {})
+    
+    # Получаем docker_image из task_data
     docker_image = task_data.get('docker_image')
     if not docker_image:
         print("[ERROR] No docker_image specified in task")
         return None
     
-    # === 1. РАНДОМНЫЙ ВЫБОР ОТКРЫТОГО ПОРТА ===
-    # Получаем информацию о портах агента
-    agent_ports = task.get('agent_ports')
+    # Получаем SSH credentials из container_info
+    ssh_username = container_info.get('ssh_username')
+    ssh_password = container_info.get('ssh_password')
+    ssh_port = container_info.get('ssh_port')
+    ssh_host = container_info.get('ssh_host')
     
-    ssh_port = None
-    if agent_ports and agent_ports.get('available_ports_start') and agent_ports.get('available_ports_end'):
-        # Используем диапазон портов агента
-        start_port = agent_ports['available_ports_start']
-        end_port = agent_ports['available_ports_end']
-        print(f"[INFO] Using agent port range: {start_port}-{end_port}")
-        
-        # Рандомно выбираем порт из диапазона
-        available_ports = []
-        for port in range(start_port, end_port + 1):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    s.bind(('localhost', port))
-                    s.close()
-                    available_ports.append(port)
-            except OSError:
-                continue
-        
-        if available_ports:
-            ssh_port = random.choice(available_ports)
-            print(f"[INFO] Randomly selected port {ssh_port} from {len(available_ports)} available ports")
-        else:
-            print(f"[WARNING] No available ports in agent range {start_port}-{end_port}, trying default range")
-            ssh_port = get_available_port()
-    else:
-        # Используем стандартный диапазон
-        print(f"[INFO] No agent port range provided, using default range")
-        ssh_port = get_available_port()
-    
-    if not ssh_port:
-        print("[ERROR] No available ports for SSH")
+    if not all([ssh_username, ssh_password, ssh_port]):
+        print("[ERROR] Missing SSH credentials in container_info")
         return None
     
-    # === 2. ГЕНЕРАЦИЯ ПОЛЬЗОВАТЕЛЯ И ПАРОЛЯ ===
-    # Генерируем случайное имя пользователя
-    username = ''.join(secrets.choice(string.ascii_lowercase) for _ in range(8))
+    print(f"[INFO] Using SSH credentials from task:")
+    print(f"  Username: {ssh_username}")
+    print(f"  Port: {ssh_port}")
+    print(f"  Host: {ssh_host}")
     
-    # Генерируем сложный пароль
-    password = ''.join(secrets.choice(string.ascii_letters + string.digits + string.punctuation) for _ in range(16))
+    # === 1. РАСЧЕТ РЕСУРСОВ ИЗ TASK_DATA ===
+    # Получаем выделенные ресурсы из задачи
+    gpus_allocated = task_data.get('gpus_allocated', {})
+    cpus_allocated = task_data.get('cpus_allocated', {})
+    ram_allocated = task_data.get('ram_allocated', 0)
+    storage_allocated = task_data.get('storage_allocated', 0)
     
-    print(f"[INFO] Generated credentials - Username: {username}, Password: {password}")
+    # Используем выделенные ресурсы или рассчитываем из доступных
+    cpu_limit = cpus_allocated.get('cores') if cpus_allocated else max(1, int(available_resources['cpu_count'] * 0.9))
+    ram_limit_gb = ram_allocated if ram_allocated else max(2, int(available_resources['available_ram_gb'] * 0.9))
+    gpu_limit = gpus_allocated.get('count') if gpus_allocated else (available_resources['gpu_count'] if check_docker_gpu_support() else 0)
+    storage_limit_gb = storage_allocated if storage_allocated else max(20, int(available_resources['available_disk_gb'] * 0.9))
     
-    # === 3. РАСЧЕТ РЕСУРСОВ С ЗАПАСОМ ПОД СИСТЕМУ ===
-    # Рассчитываем 90% от доступных ресурсов (10% запас под систему)
-    # CPU: 90% от доступных ядер, минимум 1
-    cpu_limit = max(1, int(available_resources['cpu_count'] * 0.9))
-    
-    # RAM: 90% от доступной памяти, минимум 2GB
-    ram_limit_gb = max(2, int(available_resources['available_ram_gb'] * 0.9))
-    
-    # GPU: все доступные GPU (если поддерживается)
-    gpu_support = check_docker_gpu_support()
-    gpu_limit = available_resources['gpu_count'] if gpu_support else 0
-    print(f"[INFO] GPU support: {gpu_support}, GPU limit: {gpu_limit}")
-    
-    # Storage: 90% от доступного места на диске, минимум 20GB
-    storage_limit_gb = max(20, int(available_resources['available_disk_gb'] * 0.9))
-    
-    print(f"[INFO] Allocating resources for container (90% of available):")
+    print(f"[INFO] Allocating resources for container:")
     print(f"  CPU: {cpu_limit} cores")
     print(f"  RAM: {ram_limit_gb}GB")
     print(f"  GPU: {gpu_limit} GPUs")
     print(f"  Storage: {storage_limit_gb}GB")
     
-    # === 4. СОЗДАНИЕ DOCKERFILE С SSH ===
+    # === 2. СОЗДАНИЕ DOCKERFILE С SSH ===
     import tempfile
     
     task_id = task.get('id', int(time.time()))
-    container_name = f"task_{task_id}_{username}"
+    container_name = f"task_{task_id}_{ssh_username}"
     
     # Создаем временный Dockerfile
     dockerfile_content = f"""
@@ -3314,17 +3283,17 @@ RUN apt-get update && apt-get install -y \\
     software-properties-common \\
     && rm -rf /var/lib/apt/lists/* \\
     && mkdir -p /var/run/sshd /workspace \\
-    && useradd -m -s /bin/bash {username} \\
-    && echo '{username}:{password}' | chpasswd \\
-    && usermod -aG sudo {username} \\
-    && echo '{username} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \\
-    && chown {username}:{username} /workspace \\
+    && useradd -m -s /bin/bash {ssh_username} \\
+    && echo '{ssh_username}:{ssh_password}' | chpasswd \\
+    && usermod -aG sudo {ssh_username} \\
+    && echo '{ssh_username} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \\
+    && chown {ssh_username}:{ssh_username} /workspace \\
     && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config \\
     && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \\
     && sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
 # Устанавливаем переменные окружения
-ENV HOME=/home/{username}
+ENV HOME=/home/{ssh_username}
 ENV WORKSPACE=/workspace
 
 # Открываем порт 22
@@ -3339,8 +3308,8 @@ CMD ["/usr/sbin/sshd", "-D"]
         dockerfile_path = f.name
     
     try:
-        # === 5. СОБОРКА ОБРАЗА ===
-        image_name = f"task-{task_id}-{username}"
+        # === 3. СОБОРКА ОБРАЗА ===
+        image_name = f"task-{task_id}-{ssh_username}"
         build_cmd = [
             'docker', 'build', 
             '-f', dockerfile_path,
@@ -3399,7 +3368,7 @@ CMD ["/usr/sbin/sshd", "-D"]
             print(f"[ERROR] Docker build failed: {e}")
             return None
         
-        # === 6. ЗАПУСК КОНТЕЙНЕРА ===
+        # === 4. ЗАПУСК КОНТЕЙНЕРА ===
         # Собираем docker run команду с оптимальными настройками
         cmd = [
             'docker', 'run', '-d', '--rm',
@@ -3432,16 +3401,14 @@ CMD ["/usr/sbin/sshd", "-D"]
         container_id = subprocess.check_output(cmd, timeout=60).decode().strip()
         print(f"[INFO] Container started with ID: {container_id}")
         
-        # === 7. ОЖИДАНИЕ ГОТОВНОСТИ SSH ===
+        # === 5. ОЖИДАНИЕ ГОТОВНОСТИ SSH ===
         print(f"[INFO] Waiting for SSH service to be ready on port {ssh_port}...")
         if wait_for_ssh_ready('localhost', ssh_port):
             print(f"[INFO] SSH service is ready on port {ssh_port}")
         else:
             print(f"[WARNING] SSH service not ready within timeout on port {ssh_port}")
         
-        # === 8. ПРОВЕРКА КОНТЕЙНЕРА ===
-        host_ip = get_ip_address() or 'localhost'
-        
+        # === 6. ПРОВЕРКА КОНТЕЙНЕРА ===
         # Проверяем, что контейнер действительно запущен
         try:
             status_cmd = ['docker', 'ps', '--filter', f'name={container_name}', '--format', '{{.Status}}']
@@ -3472,22 +3439,22 @@ CMD ["/usr/sbin/sshd", "-D"]
         except Exception as e:
             print(f"[WARNING] Failed to check container status: {e}")
         
-        # === 9. ВОЗВРАТ ИНФОРМАЦИИ ===
+        # === 7. ВОЗВРАТ ИНФОРМАЦИИ ===
         return {
             'container_id': container_id,
             'container_name': container_name,
             'ssh_port': ssh_port,
-            'ssh_host': host_ip,
-            'ssh_command': f"ssh -p {ssh_port} {username}@{host_ip}",
-            'ssh_username': username,
-            'ssh_password': password,
+            'ssh_host': ssh_host,
+            'ssh_command': container_info.get('ssh_command', f"ssh {ssh_username}@{ssh_host} -p {ssh_port}"),
+            'ssh_username': ssh_username,
+            'ssh_password': ssh_password,
             'status': 'running',
             'allocated_resources': {
                 'cpu_cores': cpu_limit,
                 'ram_gb': ram_limit_gb,
                 'gpu_count': gpu_limit,
                 'storage_gb': storage_limit_gb,
-                'gpu_support': gpu_support
+                'gpu_support': gpu_limit > 0
             }
         }
         
@@ -3604,19 +3571,29 @@ def poll_for_tasks(agent_id, secret_key):
             
             if response.status_code == 200:
                 resp_json = response.json()
-                task = resp_json.get('data')
                 
-                if task and task.get('task_id') is not None and task.get('task_data') is not None:
-                    print(f"[INFO] New task received: {task}")
-                    
-                    # Проверяем информацию о портах агента
-                    agent_ports = task.get('agent_ports')
-                    if agent_ports:
-                        print(f"[INFO] Agent ports info received:")
-                        print(f"  Available ports range: {agent_ports.get('available_ports_start')}-{agent_ports.get('available_ports_end')}")
-                        # Можно использовать эту информацию для настройки контейнера
-                    else:
-                        print(f"[INFO] No agent ports info received")
+                # Проверяем exception поле согласно документации
+                if resp_json.get('exception') != 0:
+                    print(f"[WARNING] Server returned exception: {resp_json.get('message', 'Unknown error')}")
+                    consecutive_errors += 1
+                    time.sleep(10)
+                    continue
+                
+                data = resp_json.get('data', {})
+                task_id = data.get('task_id')
+                task_data = data.get('task_data')
+                container_info = data.get('container_info')
+                message = data.get('message', '')
+                
+                print(f"[INFO] Server response: {message}")
+                
+                if task_id is not None and task_data is not None and container_info is not None:
+                    print(f"[INFO] New task received:")
+                    print(f"  Task ID: {task_id}")
+                    print(f"  Docker Image: {task_data.get('docker_image')}")
+                    print(f"  SSH Username: {container_info.get('ssh_username')}")
+                    print(f"  SSH Port: {container_info.get('ssh_port')}")
+                    print(f"  SSH Command: {container_info.get('ssh_command')}")
                     
                     # Проверяем права Docker перед запуском контейнера
                     if not fix_docker_permissions():
@@ -3628,11 +3605,11 @@ def poll_for_tasks(agent_id, secret_key):
                     if not gpu_support:
                         print("[WARNING] GPU support not available in Docker, containers will run without GPU access")
                     
-                    # Создаем полную задачу с task_id
+                    # Создаем полную задачу с task_id и container_info
                     full_task = {
-                        'id': task.get('task_id'),
-                        'task_data': task.get('task_data', {}),
-                        'agent_ports': agent_ports
+                        'id': task_id,
+                        'task_data': task_data,
+                        'container_info': container_info
                     }
                     
                     container_info = run_docker_container(full_task)
@@ -3645,15 +3622,18 @@ def poll_for_tasks(agent_id, secret_key):
                         print(f"  SSH Command: {container_info['ssh_command']}")
                         print(f"  Allocated Resources: {container_info.get('allocated_resources', 'N/A')}")
                         
-                        # Отправляем статус задачи обратно на сервер с информацией о SSH
-                        send_task_status(agent_id, task.get('task_id'), secret_key, container_info)
+                        # Отправляем статус задачи обратно на сервер с container_id
+                        send_task_status(agent_id, task_id, secret_key, container_info)
                         consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
                     else:
-                        print(f"[ERROR] Failed to start container for task {task.get('task_id')}")
+                        print(f"[ERROR] Failed to start container for task {task_id}")
                         consecutive_errors += 1
-                else:
-                    print(f"[INFO] No valid task received: {task}")
+                elif task_id is None:
+                    print(f"[INFO] No tasks available: {message}")
                     consecutive_errors = 0  # Сбрасываем счетчик ошибок
+                else:
+                    print(f"[WARNING] Invalid task data received: {data}")
+                    consecutive_errors += 1
             else:
                 print(f"[WARNING] Server returned status {response.status_code}")
                 print(f"[DEBUG] Server response: {response.text}")
@@ -3684,25 +3664,88 @@ def send_task_status(agent_id, task_id, secret_key, container_info):
     }
     data = {
         "status": "running",
+        "progress": 0.0,
+        "output": f"Container {container_info['container_name']} started successfully. SSH ready on {container_info['ssh_host']}:{container_info['ssh_port']}",
+        "error_message": None,
         "container_id": container_info['container_id'],
-        "container_name": container_info['container_name'],
-        "ssh_host": container_info['ssh_host'],
-        "ssh_port": container_info['ssh_port'],
-        "ssh_command": container_info['ssh_command'],
-        "ssh_username": container_info.get('ssh_username', 'root'),
-        "ssh_password": container_info.get('ssh_password', ''),
-        "output": f"Container {container_info['container_name']} started successfully. SSH ready on {container_info['ssh_host']}:{container_info['ssh_port']}"
+        "container_name": container_info['container_name']
     }
     try:
         response = requests.post(url, headers=headers, json=data, timeout=10)
         print(f"[INFO] Task status updated: {response.status_code}")
         if response.status_code == 200:
-            print(f"[INFO] SSH connection details sent to server")
-            print(f"[INFO] SSH Command: {container_info['ssh_command']}")
-            print(f"[INFO] Username: {container_info.get('ssh_username', 'root')}")
-            print(f"[INFO] Password: {container_info.get('ssh_password', '')}")
+            resp_json = response.json()
+            if resp_json.get('exception') == 0:
+                print(f"[INFO] Task status updated successfully")
+                print(f"[INFO] Container ID: {container_info['container_id']}")
+                print(f"[INFO] Container Name: {container_info['container_name']}")
+                print(f"[INFO] SSH Command: {container_info['ssh_command']}")
+                print(f"[INFO] Username: {container_info.get('ssh_username', 'root')}")
+                print(f"[INFO] Password: {container_info.get('ssh_password', '')}")
+            else:
+                print(f"[WARNING] Server returned exception: {resp_json.get('message', 'Unknown error')}")
+        else:
+            print(f"[WARNING] Server returned status {response.status_code}: {response.text}")
     except Exception as e:
         print(f"[ERROR] Failed to update task status: {e}")
+
+def send_heartbeat(agent_id, secret_key):
+    """Отправляет heartbeat с информацией о состоянии агента и использовании ресурсов"""
+    url = f"{BASE_URL}/v1/agents/{agent_id}/heartbeat"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Agent-Secret-Key": secret_key
+    }
+    
+    try:
+        # Собираем данные мониторинга
+        cpu_usage = psutil.cpu_percent()
+        memory_usage = psutil.virtual_memory().percent
+        gpu_usage_data = get_gpu_usage()
+        
+        # Формируем данные GPU usage как словарь
+        gpu_usage = {}
+        if gpu_usage_data:
+            for gpu_id, usage in gpu_usage_data.items():
+                if gpu_id != "average":
+                    gpu_usage[f"gpu{gpu_id}"] = usage
+        
+        # Получаем информацию о диске
+        disk_usage = 0
+        try:
+            disk_usage = psutil.disk_usage('/').percent
+        except:
+            pass
+        
+        # Получаем информацию о сети
+        network_usage = get_network_usage()
+        net_up_mbps = network_usage.get('up_mbps', 0)
+        net_down_mbps = network_usage.get('down_mbps', 0)
+        
+        data = {
+            "status": "online",
+            "gpu_usage": gpu_usage,
+            "cpu_usage": cpu_usage,
+            "ram_usage": memory_usage,
+            "disk_usage": disk_usage,
+            "network_usage": {
+                "up_mbps": net_up_mbps,
+                "down_mbps": net_down_mbps
+            }
+        }
+        
+        response = requests.post(url, headers=headers, json=data, timeout=10)
+        if response.status_code == 200:
+            resp_json = response.json()
+            if resp_json.get('exception') == 0:
+                print(f"[INFO] Heartbeat sent successfully")
+            else:
+                print(f"[WARNING] Heartbeat failed: {resp_json.get('message', 'Unknown error')}")
+        else:
+            print(f"[WARNING] Heartbeat failed with status {response.status_code}")
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to send heartbeat: {e}")
 
 def confirm_agent(secret_key, data):
     url = f"{BASE_URL}/v1/agents/confirm"
@@ -3935,9 +3978,10 @@ if __name__ == "__main__":
         sys.exit(1)
     
     print("[INFO] Agent initialization completed. Starting main loop...")
-    # Основной цикл с периодической очисткой, мониторингом и обновлением кода
+    # Основной цикл с периодической очисткой, мониторингом, heartbeat и обновлением кода
     cleanup_counter = 0
     git_pull_counter = 0
+    heartbeat_counter = 0
     print("[INFO] Main loop started. Agent is running...")
     
     while True:
@@ -3945,6 +3989,16 @@ if __name__ == "__main__":
             time.sleep(60)
             cleanup_counter += 1
             git_pull_counter += 1
+            heartbeat_counter += 1
+            
+            # Каждые 5 минут (5 * 60 секунд) отправляем heartbeat
+            if heartbeat_counter >= 5:
+                print("[INFO] Sending heartbeat...")
+                try:
+                    send_heartbeat(agent_id, secret_key)
+                except Exception as e:
+                    print(f"[WARNING] Heartbeat failed: {e}")
+                heartbeat_counter = 0
             
             # Каждые 10 минут (10 * 60 секунд) очищаем остановленные контейнеры
             if cleanup_counter >= 10:
