@@ -3434,11 +3434,13 @@ def run_docker_container_simple(task):
         docker_image,
         'bash', '-c',
         f"DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server sudo && "
-        f"mkdir /var/run/sshd && "
+        f"mkdir -p /var/run/sshd && "
         f"useradd -m -s /bin/bash {ssh_username} && "
         f"echo '{ssh_username}:{ssh_password}' | chpasswd && "
         f"usermod -aG sudo {ssh_username} && "
         f"sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && "
+        f"sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && "
+        f"service ssh start && "
         f"/usr/sbin/sshd -D"
     ]
     
