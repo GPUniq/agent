@@ -3278,7 +3278,9 @@ def run_docker_container(task):
     ram_limit_gb = max(2, int(available_resources['available_ram_gb'] * 0.9))
     
     # GPU: все доступные GPU (если поддерживается)
-    gpu_limit = available_resources['gpu_count'] if check_docker_gpu_support() else 0
+    gpu_support = check_docker_gpu_support()
+    gpu_limit = available_resources['gpu_count'] if gpu_support else 0
+    print(f"[INFO] GPU support: {gpu_support}, GPU limit: {gpu_limit}")
     
     # Storage: 90% от доступного места на диске, минимум 20GB
     storage_limit_gb = max(20, int(available_resources['available_disk_gb'] * 0.9))
@@ -3312,12 +3314,14 @@ RUN apt-get update && apt-get install -y \\
     software-properties-common \\
     && rm -rf /var/lib/apt/lists/*
 
-# Если это CUDA образ, устанавливаем CUDA runtime
+# Устанавливаем CUDA runtime если нужно
 RUN if [ -f /usr/local/cuda/version.txt ]; then \\
         echo "CUDA already installed"; \\
-    else \\
-        echo "Installing CUDA runtime..."; \\
+    elif command -v nvidia-smi >/dev/null 2>&1; then \\
+        echo "NVIDIA drivers found, installing CUDA runtime..."; \\
         apt-get update && apt-get install -y nvidia-cuda-toolkit; \\
+    else \\
+        echo "No CUDA or NVIDIA drivers found, skipping CUDA installation"; \\
     fi
 
 # Создаем пользователя с sudo правами
@@ -3441,6 +3445,22 @@ CMD ["/usr/sbin/sshd", "-D"]
                 print("[ERROR] Container not found in running containers")
                 return None
             print(f"[INFO] Container status: {status}")
+            
+            # Проверяем GPU доступность в контейнере
+            if gpu_limit > 0:
+                try:
+                    gpu_test_cmd = ['docker', 'exec', container_name, 'nvidia-smi']
+                    if use_sudo:
+                        gpu_test_cmd = ['sudo'] + gpu_test_cmd[1:]
+                    
+                    gpu_result = subprocess.run(gpu_test_cmd, capture_output=True, text=True, timeout=30)
+                    if gpu_result.returncode == 0:
+                        print(f"[INFO] GPU access confirmed in container: {gpu_result.stdout[:200]}...")
+                    else:
+                        print(f"[WARNING] GPU not accessible in container: {gpu_result.stderr}")
+                except Exception as e:
+                    print(f"[WARNING] Failed to test GPU in container: {e}")
+                    
         except Exception as e:
             print(f"[WARNING] Failed to check container status: {e}")
         
@@ -3458,7 +3478,8 @@ CMD ["/usr/sbin/sshd", "-D"]
                 'cpu_cores': cpu_limit,
                 'ram_gb': ram_limit_gb,
                 'gpu_count': gpu_limit,
-                'storage_gb': storage_limit_gb
+                'storage_gb': storage_limit_gb,
+                'gpu_support': gpu_support
             }
         }
         
