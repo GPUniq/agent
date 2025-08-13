@@ -11,6 +11,7 @@ import threading
 import time
 import os
 import json
+import random
 
 AGENT_ID_FILE = ".agent_id"
 
@@ -170,8 +171,27 @@ def fix_docker_permissions():
         print(f"[ERROR] Failed to fix Docker permissions: {e}")
         return False
 
+def check_docker_gpu_support():
+    """Проверяет поддержку GPU в Docker"""
+    try:
+        print("[INFO] Checking Docker GPU support...")
+        
+        # Проверяем наличие nvidia-docker или nvidia-container-toolkit
+        result = subprocess.run(['docker', 'run', '--rm', '--gpus', 'all', 'nvidia/cuda:11.8-base', 'nvidia-smi'], 
+                              capture_output=True, text=True, timeout=30)
+        if result.returncode == 0:
+            print("[INFO] Docker GPU support confirmed")
+            return True
+        else:
+            print("[WARNING] Docker GPU support not available")
+            print(f"[DEBUG] GPU test output: {result.stderr}")
+            return False
+    except Exception as e:
+        print(f"[WARNING] Docker GPU support check failed: {e}")
+        return False
+
 def get_available_resources():
-    """Получает информацию о доступных ресурсах системы"""
+    """Получает информацию о доступных ресурсах системы с учетом уже запущенных контейнеров"""
     try:
         # CPU
         cpu_count = psutil.cpu_count(logical=True)
@@ -194,6 +214,24 @@ def get_available_resources():
         disk_usage = psutil.disk_usage('/')
         total_disk_gb = disk_usage.total / (1024**3)
         available_disk_gb = disk_usage.free / (1024**3)
+        
+        # Проверяем уже запущенные контейнеры и вычитаем их ресурсы
+        running_containers_resources = get_running_containers_resources()
+        
+        # Вычитаем ресурсы уже запущенных контейнеров
+        if running_containers_resources:
+            available_ram_gb = max(1, available_ram_gb - running_containers_resources.get('ram_gb', 0))
+            available_disk_gb = max(10, available_disk_gb - running_containers_resources.get('disk_gb', 0))
+            # GPU считаем как общее количество, так как Docker может использовать все GPU
+            # CPU также считаем как общее количество, так как Docker может ограничивать по ядрам
+        
+        print(f"[INFO] System resources:")
+        print(f"  Total CPU cores: {cpu_count}")
+        print(f"  Available RAM: {available_ram_gb:.1f}GB")
+        print(f"  Available disk: {available_disk_gb:.1f}GB")
+        print(f"  GPU count: {gpu_count}")
+        if running_containers_resources:
+            print(f"  Running containers using: {running_containers_resources.get('ram_gb', 0):.1f}GB RAM, {running_containers_resources.get('disk_gb', 0):.1f}GB disk")
         
         return {
             'cpu_count': cpu_count,
@@ -2716,12 +2754,22 @@ def get_system_info():
     hardware_info = get_hardware_info()
     print("[DEBUG] Hardware info collected")
     
+    print("[DEBUG] Getting available ports range...")
+    try:
+        available_ports_start, available_ports_end = get_available_ports_range()
+        print(f"[DEBUG] Available ports: {available_ports_start}-{available_ports_end}")
+    except Exception as e:
+        print(f"[WARNING] Failed to get available ports range: {e}")
+        available_ports_start, available_ports_end = None, None
+    
     return {
         "hostname": hostname,
         "ip_address": ip_address,
         "total_ram_gb": total_ram_gb,
         "ram_type": ram_type,
-        "hardware_info": hardware_info
+        "hardware_info": hardware_info,
+        "available_ports_start": available_ports_start,
+        "available_ports_end": available_ports_end
     }
 
 # === Функция отправки данных на сервер ===
@@ -2999,6 +3047,76 @@ def get_gpu_usage():
     return gpu_usage
 
 # === Docker и SSH ===
+def get_running_containers_resources():
+    """Получает информацию о ресурсах уже запущенных контейнеров"""
+    try:
+        import subprocess
+        
+        # Проверяем права Docker
+        use_sudo = False
+        try:
+            result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                use_sudo = True
+        except:
+            use_sudo = True
+        
+        # Получаем список запущенных контейнеров
+        cmd = ['docker', 'ps', '--format', '{{.Names}}']
+        if use_sudo:
+            cmd = ['sudo'] + cmd[1:]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            print(f"[WARNING] Failed to get running containers: {result.stderr}")
+            return None
+        
+        container_names = result.stdout.strip().split('\n') if result.stdout.strip() else []
+        if not container_names:
+            return {'ram_gb': 0, 'disk_gb': 0}
+        
+        total_ram_gb = 0
+        total_disk_gb = 0
+        
+        # Получаем информацию о ресурсах каждого контейнера
+        for container_name in container_names:
+            if not container_name:
+                continue
+                
+            # Получаем информацию о памяти контейнера
+            try:
+                stats_cmd = ['docker', 'stats', container_name, '--no-stream', '--format', '{{.MemUsage}}']
+                if use_sudo:
+                    stats_cmd = ['sudo'] + stats_cmd[1:]
+                
+                stats_result = subprocess.run(stats_cmd, capture_output=True, text=True, timeout=5)
+                if stats_result.returncode == 0 and stats_result.stdout.strip():
+                    mem_usage = stats_result.stdout.strip()
+                    # Парсим строку вида "1.234GiB / 2.000GiB"
+                    if 'GiB' in mem_usage:
+                        mem_parts = mem_usage.split('/')[0].strip()
+                        mem_gb = float(mem_parts.replace('GiB', ''))
+                        total_ram_gb += mem_gb
+                    elif 'MiB' in mem_usage:
+                        mem_parts = mem_usage.split('/')[0].strip()
+                        mem_mb = float(mem_parts.replace('MiB', ''))
+                        total_ram_gb += mem_mb / 1024
+            except Exception as e:
+                print(f"[WARNING] Failed to get memory usage for container {container_name}: {e}")
+        
+        # Оценка дискового пространства (примерная)
+        total_disk_gb = len(container_names) * 5  # Примерно 5GB на контейнер
+        
+        return {
+            'ram_gb': total_ram_gb,
+            'disk_gb': total_disk_gb,
+            'container_count': len(container_names)
+        }
+        
+    except Exception as e:
+        print(f"[WARNING] Failed to get running containers resources: {e}")
+        return None
+
 def get_available_port(start_port=21234, max_attempts=100):
     """Получает свободный порт для SSH подключения"""
     import socket
@@ -3010,6 +3128,51 @@ def get_available_port(start_port=21234, max_attempts=100):
         except OSError:
             continue
     return None
+
+def get_available_ports_range(start_port=10000, end_port=65535, max_range_size=1000):
+    """Определяет диапазон доступных портов для агента"""
+    import socket
+    
+    # Проверяем, что диапазон валидный
+    if start_port >= end_port or start_port < 1 or end_port > 65535:
+        print(f"[WARNING] Invalid port range: {start_port}-{end_port}")
+        return None, None
+    
+    # Ищем свободный диапазон портов
+    available_start = None
+    available_end = None
+    
+    for port in range(start_port, end_port - max_range_size + 1):
+        # Проверяем, свободен ли текущий порт
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('localhost', port))
+                s.close()
+                
+                # Если порт свободен, проверяем следующий диапазон
+                range_available = True
+                for check_port in range(port + 1, port + max_range_size):
+                    try:
+                        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s2:
+                            s2.bind(('localhost', check_port))
+                            s2.close()
+                    except OSError:
+                        range_available = False
+                        break
+                
+                if range_available:
+                    available_start = port
+                    available_end = port + max_range_size - 1
+                    break
+        except OSError:
+            continue
+    
+    if available_start and available_end:
+        print(f"[INFO] Found available port range: {available_start}-{available_end}")
+        return available_start, available_end
+    else:
+        print(f"[WARNING] No available port range found in {start_port}-{end_port}")
+        return None, None
 
 def wait_for_ssh_ready(host, port, timeout=60):
     """Ждет, пока SSH сервис будет готов к подключению"""
@@ -3029,6 +3192,9 @@ def wait_for_ssh_ready(host, port, timeout=60):
 
 def run_docker_container(task):
     import subprocess
+    import secrets
+    import string
+    import random
     
     # Получаем доступные ресурсы системы
     available_resources = get_available_resources()
@@ -3038,62 +3204,117 @@ def run_docker_container(task):
     
     print(f"[INFO] Available resources: {json.dumps(available_resources, indent=2)}")
     
-    docker_image = task.get('docker_image')
+    # Получаем docker_image из task_data
+    task_data = task.get('task_data', {})
+    docker_image = task_data.get('docker_image')
     if not docker_image:
         print("[ERROR] No docker_image specified in task")
         return None
     
-    # Получаем свободный порт для SSH
-    ssh_port = get_available_port()
+    # === 1. РАНДОМНЫЙ ВЫБОР ОТКРЫТОГО ПОРТА ===
+    # Получаем информацию о портах агента
+    agent_ports = task.get('agent_ports')
+    
+    ssh_port = None
+    if agent_ports and agent_ports.get('available_ports_start') and agent_ports.get('available_ports_end'):
+        # Используем диапазон портов агента
+        start_port = agent_ports['available_ports_start']
+        end_port = agent_ports['available_ports_end']
+        print(f"[INFO] Using agent port range: {start_port}-{end_port}")
+        
+        # Рандомно выбираем порт из диапазона
+        available_ports = []
+        for port in range(start_port, end_port + 1):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(('localhost', port))
+                    s.close()
+                    available_ports.append(port)
+            except OSError:
+                continue
+        
+        if available_ports:
+            ssh_port = random.choice(available_ports)
+            print(f"[INFO] Randomly selected port {ssh_port} from {len(available_ports)} available ports")
+        else:
+            print(f"[WARNING] No available ports in agent range {start_port}-{end_port}, trying default range")
+            ssh_port = get_available_port()
+    else:
+        # Используем стандартный диапазон
+        print(f"[INFO] No agent port range provided, using default range")
+        ssh_port = get_available_port()
+    
     if not ssh_port:
         print("[ERROR] No available ports for SSH")
         return None
     
-    task_id = task.get('id', int(time.time()))
-    container_name = f"task_{task_id}"
+    # === 2. ГЕНЕРАЦИЯ ПОЛЬЗОВАТЕЛЯ И ПАРОЛЯ ===
+    # Генерируем случайное имя пользователя
+    username = ''.join(secrets.choice(string.ascii_lowercase) for _ in range(8))
     
-    # Рассчитываем 95% от доступных ресурсов
-    # CPU: 95% от доступных ядер
-    cpu_limit = max(1, int(available_resources['cpu_count'] * 0.95))
+    # Генерируем сложный пароль
+    password = ''.join(secrets.choice(string.ascii_letters + string.digits + string.punctuation) for _ in range(16))
     
-    # RAM: 95% от доступной памяти (но минимум 1GB)
-    ram_limit_gb = max(1, int(available_resources['available_ram_gb'] * 0.95))
+    print(f"[INFO] Generated credentials - Username: {username}, Password: {password}")
     
-    # GPU: все доступные GPU
-    gpu_limit = available_resources['gpu_count']
+    # === 3. РАСЧЕТ РЕСУРСОВ С ЗАПАСОМ ПОД СИСТЕМУ ===
+    # Рассчитываем 90% от доступных ресурсов (10% запас под систему)
+    # CPU: 90% от доступных ядер, минимум 1
+    cpu_limit = max(1, int(available_resources['cpu_count'] * 0.9))
     
-    # Storage: 95% от доступного места на диске
-    storage_limit_gb = max(10, int(available_resources['available_disk_gb'] * 0.95))
+    # RAM: 90% от доступной памяти, минимум 2GB
+    ram_limit_gb = max(2, int(available_resources['available_ram_gb'] * 0.9))
     
-    print(f"[INFO] Allocating resources for container:")
+    # GPU: все доступные GPU (если поддерживается)
+    gpu_limit = available_resources['gpu_count'] if check_docker_gpu_support() else 0
+    
+    # Storage: 90% от доступного места на диске, минимум 20GB
+    storage_limit_gb = max(20, int(available_resources['available_disk_gb'] * 0.9))
+    
+    print(f"[INFO] Allocating resources for container (90% of available):")
     print(f"  CPU: {cpu_limit} cores")
     print(f"  RAM: {ram_limit_gb}GB")
     print(f"  GPU: {gpu_limit} GPUs")
     print(f"  Storage: {storage_limit_gb}GB")
     
-    # Создаем Dockerfile для образа с SSH
-    import tempfile
-    import secrets
-    import string
-    
-    # Генерируем случайный пароль
-    password = ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(12))
+    # === 4. СОЗДАНИЕ DOCKERFILE С SSH ===
+    task_id = task.get('id', int(time.time()))
+    container_name = f"task_{task_id}_{username}"
     
     # Создаем временный Dockerfile
     dockerfile_content = f"""
 FROM {docker_image}
 
-# Устанавливаем SSH сервер
-RUN apt-get update && apt-get install -y openssh-server sudo
+# Устанавливаем необходимые пакеты
+RUN apt-get update && apt-get install -y \\
+    openssh-server \\
+    sudo \\
+    curl \\
+    wget \\
+    git \\
+    vim \\
+    nano \\
+    htop \\
+    && rm -rf /var/lib/apt/lists/*
 
-# Создаем пользователя root с паролем
-RUN echo 'root:{password}' | chpasswd
+# Создаем пользователя с sudo правами
+RUN useradd -m -s /bin/bash {username} \\
+    && echo '{username}:{password}' | chpasswd \\
+    && usermod -aG sudo {username} \\
+    && echo '{username} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
 
-# Разрешаем root логин через SSH
-RUN sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+# Настраиваем SSH
+RUN mkdir -p /var/run/sshd \\
+    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config \\
+    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \\
+    && sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
 
-# Создаем директорию для SSH
-RUN mkdir /var/run/sshd
+# Создаем рабочую директорию
+RUN mkdir -p /workspace && chown {username}:{username} /workspace
+
+# Устанавливаем переменные окружения
+ENV HOME=/home/{username}
+ENV WORKSPACE=/workspace
 
 # Открываем порт 22
 EXPOSE 22
@@ -3106,8 +3327,9 @@ CMD ["/usr/sbin/sshd", "-D"]
         f.write(dockerfile_content)
         dockerfile_path = f.name
     
-        # Собираем образ
-        image_name = f"task-{task_id}-image"
+    try:
+        # === 5. СОБОРКА ОБРАЗА ===
+        image_name = f"task-{task_id}-{username}"
         build_cmd = [
             'docker', 'build', 
             '-f', dockerfile_path,
@@ -3134,6 +3356,7 @@ CMD ["/usr/sbin/sshd", "-D"]
             print(f"[ERROR] Failed to build Docker image: {result.stderr}")
             return None
         
+        # === 6. ЗАПУСК КОНТЕЙНЕРА ===
         # Собираем docker run команду с оптимальными настройками
         cmd = [
             'docker', 'run', '-d', '--rm',
@@ -3141,7 +3364,9 @@ CMD ["/usr/sbin/sshd", "-D"]
             '-p', f'{ssh_port}:22',  # Пробрасываем порт для ssh
             '--memory', f'{ram_limit_gb}g',
             '--cpus', str(cpu_limit),
-            '--shm-size', '2g',  # Увеличиваем shared memory для лучшей производительности
+            '--shm-size', '4g',  # Увеличиваем shared memory для GPU
+            '--ulimit', 'memlock=-1',  # Убираем лимит на память для GPU
+            '--ulimit', 'stack=67108864',  # Увеличиваем стек для GPU
         ]
         
         # Добавляем GPU если есть
@@ -3150,12 +3375,11 @@ CMD ["/usr/sbin/sshd", "-D"]
             print(f"[INFO] GPU access enabled for {gpu_limit} GPUs")
         
         # Добавляем volume для хранения данных
-        cmd += ['-v', f'/tmp/{container_name}_data:/data']
+        cmd += ['-v', f'/tmp/{container_name}_data:/workspace']
         
         # Добавляем образ
         cmd += [image_name]
-    
-    try:
+        
         print(f"[INFO] Starting container with command: {' '.join(cmd)}")
         
         # Проверяем права Docker перед запуском
@@ -3165,14 +3389,14 @@ CMD ["/usr/sbin/sshd", "-D"]
         container_id = subprocess.check_output(cmd, timeout=60).decode().strip()
         print(f"[INFO] Container started with ID: {container_id}")
         
-        # Ждем, пока SSH сервис будет готов
+        # === 7. ОЖИДАНИЕ ГОТОВНОСТИ SSH ===
         print(f"[INFO] Waiting for SSH service to be ready on port {ssh_port}...")
         if wait_for_ssh_ready('localhost', ssh_port):
             print(f"[INFO] SSH service is ready on port {ssh_port}")
         else:
             print(f"[WARNING] SSH service not ready within timeout on port {ssh_port}")
         
-        # Получаем IP адрес хоста для подключения
+        # === 8. ПРОВЕРКА КОНТЕЙНЕРА ===
         host_ip = get_ip_address() or 'localhost'
         
         # Проверяем, что контейнер действительно запущен
@@ -3189,13 +3413,14 @@ CMD ["/usr/sbin/sshd", "-D"]
         except Exception as e:
             print(f"[WARNING] Failed to check container status: {e}")
         
+        # === 9. ВОЗВРАТ ИНФОРМАЦИИ ===
         return {
             'container_id': container_id,
             'container_name': container_name,
             'ssh_port': ssh_port,
             'ssh_host': host_ip,
-            'ssh_command': f"ssh -p {ssh_port} root@{host_ip}",
-            'ssh_username': 'root',
+            'ssh_command': f"ssh -p {ssh_port} {username}@{host_ip}",
+            'ssh_username': username,
             'ssh_password': password,
             'status': 'running',
             'allocated_resources': {
@@ -3205,11 +3430,12 @@ CMD ["/usr/sbin/sshd", "-D"]
                 'storage_gb': storage_limit_gb
             }
         }
+        
     except subprocess.TimeoutExpired:
-        print("[ERROR] Docker run command timed out")
+        print("[ERROR] Docker operation timed out")
         return None
     except Exception as e:
-        print(f"[ERROR] Docker run failed: {e}")
+        print(f"[ERROR] Docker operation failed: {e}")
         return None
     finally:
         # Удаляем временный файл
@@ -3323,12 +3549,33 @@ def poll_for_tasks(agent_id, secret_key):
                 if task and task.get('task_id') is not None and task.get('task_data') is not None:
                     print(f"[INFO] New task received: {task}")
                     
+                    # Проверяем информацию о портах агента
+                    agent_ports = task.get('agent_ports')
+                    if agent_ports:
+                        print(f"[INFO] Agent ports info received:")
+                        print(f"  Available ports range: {agent_ports.get('available_ports_start')}-{agent_ports.get('available_ports_end')}")
+                        # Можно использовать эту информацию для настройки контейнера
+                    else:
+                        print(f"[INFO] No agent ports info received")
+                    
                     # Проверяем права Docker перед запуском контейнера
                     if not fix_docker_permissions():
                         print("[ERROR] Docker permissions not available, trying with sudo...")
                         # Продолжаем, но будем использовать sudo
                     
-                    container_info = run_docker_container(task)
+                    # Проверяем поддержку GPU в Docker
+                    gpu_support = check_docker_gpu_support()
+                    if not gpu_support:
+                        print("[WARNING] GPU support not available in Docker, containers will run without GPU access")
+                    
+                    # Создаем полную задачу с task_id
+                    full_task = {
+                        'id': task.get('task_id'),
+                        'task_data': task.get('task_data', {}),
+                        'agent_ports': agent_ports
+                    }
+                    
+                    container_info = run_docker_container(full_task)
                     if container_info:
                         print(f"[INFO] Docker container started successfully:")
                         print(f"  Container ID: {container_info['container_id']}")
@@ -3339,10 +3586,10 @@ def poll_for_tasks(agent_id, secret_key):
                         print(f"  Allocated Resources: {container_info.get('allocated_resources', 'N/A')}")
                         
                         # Отправляем статус задачи обратно на сервер с информацией о SSH
-                        send_task_status(agent_id, task.get('id'), secret_key, container_info)
+                        send_task_status(agent_id, task.get('task_id'), secret_key, container_info)
                         consecutive_errors = 0  # Сбрасываем счетчик ошибок при успехе
                     else:
-                        print(f"[ERROR] Failed to start container for task {task.get('id')}")
+                        print(f"[ERROR] Failed to start container for task {task.get('task_id')}")
                         consecutive_errors += 1
                 else:
                     print(f"[INFO] No valid task received: {task}")
