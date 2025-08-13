@@ -176,16 +176,28 @@ def check_docker_gpu_support():
     try:
         print("[INFO] Checking Docker GPU support...")
         
-        # Проверяем наличие nvidia-docker или nvidia-container-toolkit
-        result = subprocess.run(['docker', 'run', '--rm', '--gpus', 'all', 'nvidia/cuda:11.8-base', 'nvidia-smi'], 
-                              capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
-            print("[INFO] Docker GPU support confirmed")
-            return True
-        else:
-            print("[WARNING] Docker GPU support not available")
-            print(f"[DEBUG] GPU test output: {result.stderr}")
-            return False
+        # Сначала проверяем, есть ли nvidia-container-toolkit
+        try:
+            result = subprocess.run(['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi'], 
+                                  capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                print("[INFO] Docker GPU support confirmed")
+                return True
+        except:
+            pass
+        
+        # Альтернативная проверка - проверяем наличие nvidia-container-toolkit
+        try:
+            result = subprocess.run(['nvidia-container-cli', 'info'], 
+                                  capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                print("[INFO] nvidia-container-toolkit found")
+                return True
+        except:
+            pass
+        
+        print("[WARNING] Docker GPU support not available")
+        return False
     except Exception as e:
         print(f"[WARNING] Docker GPU support check failed: {e}")
         return False
@@ -3278,6 +3290,8 @@ def run_docker_container(task):
     print(f"  Storage: {storage_limit_gb}GB")
     
     # === 4. СОЗДАНИЕ DOCKERFILE С SSH ===
+    import tempfile
+    
     task_id = task.get('id', int(time.time()))
     container_name = f"task_{task_id}_{username}"
     
@@ -3295,7 +3309,16 @@ RUN apt-get update && apt-get install -y \\
     vim \\
     nano \\
     htop \\
+    software-properties-common \\
     && rm -rf /var/lib/apt/lists/*
+
+# Если это CUDA образ, устанавливаем CUDA runtime
+RUN if [ -f /usr/local/cuda/version.txt ]; then \\
+        echo "CUDA already installed"; \\
+    else \\
+        echo "Installing CUDA runtime..."; \\
+        apt-get update && apt-get install -y nvidia-cuda-toolkit; \\
+    fi
 
 # Создаем пользователя с sudo правами
 RUN useradd -m -s /bin/bash {username} \\
@@ -3350,10 +3373,18 @@ CMD ["/usr/sbin/sshd", "-D"]
             build_cmd = ['sudo'] + build_cmd
         
         print(f"[INFO] Building Docker image: {' '.join(build_cmd)}")
-        result = subprocess.run(build_cmd, capture_output=True, text=True, timeout=300)
-        
-        if result.returncode != 0:
-            print(f"[ERROR] Failed to build Docker image: {result.stderr}")
+        try:
+            result = subprocess.run(build_cmd, capture_output=True, text=True, timeout=300)
+            
+            if result.returncode != 0:
+                print(f"[ERROR] Failed to build Docker image: {result.stderr}")
+                print(f"[DEBUG] Build stdout: {result.stdout}")
+                return None
+        except subprocess.TimeoutExpired:
+            print("[ERROR] Docker build timed out")
+            return None
+        except Exception as e:
+            print(f"[ERROR] Docker build failed: {e}")
             return None
         
         # === 6. ЗАПУСК КОНТЕЙНЕРА ===
