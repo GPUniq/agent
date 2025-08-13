@@ -176,22 +176,44 @@ def check_docker_gpu_support():
     try:
         print("[INFO] Checking Docker GPU support...")
         
-        # Сначала проверяем, есть ли nvidia-container-toolkit
-        try:
-            result = subprocess.run(['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi'], 
-                                  capture_output=True, text=True, timeout=30)
-            if result.returncode == 0:
-                print("[INFO] Docker GPU support confirmed")
-                return True
-        except:
-            pass
-        
-        # Альтернативная проверка - проверяем наличие nvidia-container-toolkit
+        # Проверяем наличие nvidia-container-toolkit
         try:
             result = subprocess.run(['nvidia-container-cli', 'info'], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 print("[INFO] nvidia-container-toolkit found")
+                
+                # Проверяем, работает ли --gpus флаг
+                try:
+                    result = subprocess.run(['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi'], 
+                                          capture_output=True, text=True, timeout=30)
+                    if result.returncode == 0:
+                        print("[INFO] Docker GPU support confirmed with --gpus flag")
+                        return True
+                except:
+                    pass
+                
+                # Проверяем, работает ли --runtime=nvidia
+                try:
+                    result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
+                                          capture_output=True, text=True, timeout=30)
+                    if result.returncode == 0:
+                        print("[INFO] Docker GPU support confirmed with --runtime=nvidia")
+                        return True
+                except:
+                    pass
+                
+                print("[WARNING] nvidia-container-toolkit found but GPU access not working")
+                return False
+        except:
+            pass
+        
+        # Проверяем наличие nvidia-docker
+        try:
+            result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
+                                  capture_output=True, text=True, timeout=30)
+            if result.returncode == 0:
+                print("[INFO] Docker GPU support confirmed with nvidia-docker")
                 return True
         except:
             pass
@@ -3236,10 +3258,24 @@ def run_docker_container_simple(task):
     cpus_allocated = task_data.get('cpus_allocated', {})
     ram_allocated = task_data.get('ram_allocated', 0)
     
-    # Рассчитываем лимиты ресурсов
+    # Получаем доступные ресурсы для проверки лимитов
+    available_resources = get_available_resources()
+    
+    # Рассчитываем лимиты ресурсов с проверкой доступности
     cpu_limit = cpus_allocated.get('cores') if cpus_allocated else 1
+    if available_resources and cpu_limit > available_resources.get('cpu_count', 1):
+        print(f"[WARNING] Requested CPU cores ({cpu_limit}) exceeds available ({available_resources.get('cpu_count', 1)}), using available")
+        cpu_limit = available_resources.get('cpu_count', 1)
+    
     ram_limit_gb = ram_allocated if ram_allocated else 2
+    if available_resources and ram_limit_gb > available_resources.get('available_ram_gb', 2):
+        print(f"[WARNING] Requested RAM ({ram_limit_gb}GB) exceeds available ({available_resources.get('available_ram_gb', 2)}GB), using available")
+        ram_limit_gb = int(available_resources.get('available_ram_gb', 2))
+    
     gpu_limit = gpus_allocated.get('count') if gpus_allocated else 0
+    if available_resources and gpu_limit > available_resources.get('gpu_count', 0):
+        print(f"[WARNING] Requested GPUs ({gpu_limit}) exceeds available ({available_resources.get('gpu_count', 0)}), using available")
+        gpu_limit = available_resources.get('gpu_count', 0)
     
     task_id = task.get('id', int(time.time()))
     container_name = f"task_{task_id}_{ssh_username}"
@@ -3255,8 +3291,21 @@ def run_docker_container_simple(task):
     
     # Добавляем GPU если есть
     if gpu_limit > 0:
-        cmd += ['--gpus', 'all']
-        print(f"[INFO] GPU access enabled for {gpu_limit} GPUs")
+        # Проверяем, какая версия nvidia-container-toolkit установлена
+        try:
+            result = subprocess.run(['nvidia-container-cli', 'info'], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                # Новая версия - используем --gpus
+                cmd += ['--gpus', 'all']
+                print(f"[INFO] GPU access enabled for {gpu_limit} GPUs (using --gpus flag)")
+            else:
+                # Старая версия - используем --runtime=nvidia
+                cmd += ['--runtime=nvidia']
+                print(f"[INFO] GPU access enabled for {gpu_limit} GPUs (using --runtime=nvidia)")
+        except:
+            # Fallback - пробуем --runtime=nvidia
+            cmd += ['--runtime=nvidia']
+            print(f"[INFO] GPU access enabled for {gpu_limit} GPUs (using --runtime=nvidia fallback)")
     
     # Добавляем образ и команду запуска
     cmd += [
@@ -3286,8 +3335,32 @@ def run_docker_container_simple(task):
         cmd = ['sudo'] + cmd
     
     try:
-        container_id = subprocess.check_output(cmd, timeout=60).decode().strip()
-        print(f"[INFO] Container started with ID: {container_id}")
+        print(f"[INFO] Executing Docker command...")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        
+        if result.returncode != 0:
+            print(f"[ERROR] Docker command failed with return code {result.returncode}")
+            print(f"[ERROR] Docker stderr: {result.stderr}")
+            print(f"[ERROR] Docker stdout: {result.stdout}")
+            
+            # Попробуем запустить без GPU если была ошибка с GPU
+            if gpu_limit > 0 and ('nvidia' in result.stderr.lower() or 'gpu' in result.stderr.lower()):
+                print(f"[INFO] Trying to start container without GPU access...")
+                cmd_no_gpu = [arg for arg in cmd if arg not in ['--gpus', 'all', '--runtime=nvidia']]
+                result_no_gpu = subprocess.run(cmd_no_gpu, capture_output=True, text=True, timeout=60)
+                
+                if result_no_gpu.returncode == 0:
+                    container_id = result_no_gpu.stdout.strip()
+                    print(f"[INFO] Container started without GPU access, ID: {container_id}")
+                    gpu_limit = 0  # Обновляем информацию о GPU
+                else:
+                    print(f"[ERROR] Docker command without GPU also failed: {result_no_gpu.stderr}")
+                    return None
+            else:
+                return None
+        else:
+            container_id = result.stdout.strip()
+            print(f"[INFO] Container started with ID: {container_id}")
         
         # Ожидаем готовности SSH
         print(f"[INFO] Waiting for SSH service to be ready on port {ssh_port}...")
