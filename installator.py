@@ -3440,7 +3440,6 @@ def run_docker_container_simple(task):
         f"usermod -aG sudo {ssh_username} && "
         f"sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && "
         f"sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && "
-        f"service ssh start && "
         f"/usr/sbin/sshd -D"
     ]
     
