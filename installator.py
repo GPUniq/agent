@@ -140,7 +140,6 @@ def fix_docker_permissions():
             print("[INFO] Applied docker group changes")
         except Exception as e:
             print(f"[WARNING] Failed to apply group changes: {e}")
-        
         # Ждем немного и проверяем снова
         time.sleep(3)
         
@@ -192,8 +191,6 @@ def check_docker_gpu_support():
                         return True
                 except:
                     pass
-                
-
                 try:
                     result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
                                           capture_output=True, text=True, timeout=30)
@@ -207,7 +204,7 @@ def check_docker_gpu_support():
                 return False
         except:
             pass
-        
+
         # Проверяем наличие nvidia-docker
         try:
             result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
