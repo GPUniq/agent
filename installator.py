@@ -3301,7 +3301,7 @@ def run_docker_container(task):
     dockerfile_content = f"""
 FROM {docker_image}
 
-# Устанавливаем необходимые пакеты
+# Объединяем все команды RUN для ускорения сборки
 RUN apt-get update && apt-get install -y \\
     openssh-server \\
     sudo \\
@@ -3312,32 +3312,16 @@ RUN apt-get update && apt-get install -y \\
     nano \\
     htop \\
     software-properties-common \\
-    && rm -rf /var/lib/apt/lists/*
-
-# Устанавливаем CUDA runtime если нужно
-RUN if [ -f /usr/local/cuda/version.txt ]; then \\
-        echo "CUDA already installed"; \\
-    elif command -v nvidia-smi >/dev/null 2>&1; then \\
-        echo "NVIDIA drivers found, installing CUDA runtime..."; \\
-        apt-get update && apt-get install -y nvidia-cuda-toolkit; \\
-    else \\
-        echo "No CUDA or NVIDIA drivers found, skipping CUDA installation"; \\
-    fi
-
-# Создаем пользователя с sudo правами
-RUN useradd -m -s /bin/bash {username} \\
+    && rm -rf /var/lib/apt/lists/* \\
+    && mkdir -p /var/run/sshd /workspace \\
+    && useradd -m -s /bin/bash {username} \\
     && echo '{username}:{password}' | chpasswd \\
     && usermod -aG sudo {username} \\
-    && echo '{username} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers
-
-# Настраиваем SSH
-RUN mkdir -p /var/run/sshd \\
+    && echo '{username} ALL=(ALL) NOPASSWD:ALL' >> /etc/sudoers \\
+    && chown {username}:{username} /workspace \\
     && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config \\
     && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \\
     && sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config
-
-# Создаем рабочую директорию
-RUN mkdir -p /workspace && chown {username}:{username} /workspace
 
 # Устанавливаем переменные окружения
 ENV HOME=/home/{username}
@@ -3377,15 +3361,39 @@ CMD ["/usr/sbin/sshd", "-D"]
             build_cmd = ['sudo'] + build_cmd
         
         print(f"[INFO] Building Docker image: {' '.join(build_cmd)}")
+        print(f"[INFO] This may take several minutes on first run...")
+        
         try:
-            result = subprocess.run(build_cmd, capture_output=True, text=True, timeout=300)
+            # Запускаем сборку с выводом в реальном времени
+            process = subprocess.Popen(
+                build_cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT, 
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
             
-            if result.returncode != 0:
-                print(f"[ERROR] Failed to build Docker image: {result.stderr}")
-                print(f"[DEBUG] Build stdout: {result.stdout}")
+            # Читаем вывод в реальном времени
+            while True:
+                output = process.stdout.readline()
+                if output == '' and process.poll() is not None:
+                    break
+                if output:
+                    print(f"[DOCKER BUILD] {output.strip()}")
+            
+            return_code = process.poll()
+            
+            if return_code != 0:
+                print(f"[ERROR] Docker build failed with return code: {return_code}")
                 return None
+            else:
+                print(f"[INFO] Docker build completed successfully")
+                
         except subprocess.TimeoutExpired:
-            print("[ERROR] Docker build timed out")
+            print("[ERROR] Docker build timed out after 5 minutes")
+            if 'process' in locals():
+                process.terminate()
             return None
         except Exception as e:
             print(f"[ERROR] Docker build failed: {e}")
