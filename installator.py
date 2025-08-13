@@ -3291,21 +3291,83 @@ def run_docker_container_simple(task):
     
     # Добавляем GPU если есть
     if gpu_limit > 0:
-        # Проверяем, какая версия nvidia-container-toolkit установлена
+        print(f"[INFO] GPU access required for {gpu_limit} GPUs")
+        
+        # Проверяем и исправляем настройки NVIDIA Container Runtime
         try:
+            # Проверяем статус nvidia-container-runtime
             result = subprocess.run(['nvidia-container-cli', 'info'], capture_output=True, text=True, timeout=5)
+            if result.returncode != 0:
+                print("[WARNING] nvidia-container-cli not working, attempting to fix...")
+                
+                # Пытаемся перезапустить nvidia-container-runtime
+                try:
+                    subprocess.run(['sudo', 'systemctl', 'restart', 'nvidia-container-runtime'], check=True)
+                    print("[INFO] nvidia-container-runtime restarted")
+                    time.sleep(3)  # Ждем запуска
+                except:
+                    pass
+                
+                # Пытаемся перезапустить Docker
+                try:
+                    subprocess.run(['sudo', 'systemctl', 'restart', 'docker'], check=True)
+                    print("[INFO] Docker restarted")
+                    time.sleep(5)  # Ждем запуска
+                except:
+                    pass
+                
+                # Проверяем снова
+                result = subprocess.run(['nvidia-container-cli', 'info'], capture_output=True, text=True, timeout=5)
+            
             if result.returncode == 0:
-                # Новая версия - используем --gpus
-                cmd += ['--gpus', 'all']
-                print(f"[INFO] GPU access enabled for {gpu_limit} GPUs (using --gpus flag)")
+                print("[INFO] nvidia-container-cli is working")
+                
+                # Проверяем, какой флаг работает
+                test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi', '--list-gpus']
+                test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+                
+                if test_result.returncode == 0:
+                    cmd += ['--gpus', 'all']
+                    print(f"[INFO] Using --gpus all flag for GPU access")
+                else:
+                    # Пробуем --runtime=nvidia
+                    test_cmd = ['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi', '--list-gpus']
+                    test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+                    
+                    if test_result.returncode == 0:
+                        cmd += ['--runtime=nvidia']
+                        print(f"[INFO] Using --runtime=nvidia flag for GPU access")
+                    else:
+                        print("[ERROR] Neither --gpus all nor --runtime=nvidia works!")
+                        print(f"[ERROR] --gpus all error: {test_result.stderr}")
+                        
+                        # Попробуем установить/обновить nvidia-container-toolkit
+                        print("[INFO] Attempting to install/update nvidia-container-toolkit...")
+                        try:
+                            subprocess.run(['sudo', 'apt-get', 'update'], check=True)
+                            subprocess.run(['sudo', 'apt-get', 'install', '-y', 'nvidia-container-toolkit'], check=True)
+                            subprocess.run(['sudo', 'systemctl', 'restart', 'docker'], check=True)
+                            print("[INFO] nvidia-container-toolkit installed/updated")
+                            
+                            # Проверяем снова
+                            test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi', '--list-gpus']
+                            test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+                            
+                            if test_result.returncode == 0:
+                                cmd += ['--gpus', 'all']
+                                print(f"[INFO] GPU access fixed, using --gpus all")
+                            else:
+                                raise Exception("GPU access still not working after installation")
+                        except Exception as e:
+                            print(f"[ERROR] Failed to fix GPU access: {e}")
+                            raise Exception("GPU access is required but not available")
             else:
-                # Старая версия - используем --runtime=nvidia
-                cmd += ['--runtime=nvidia']
-                print(f"[INFO] GPU access enabled for {gpu_limit} GPUs (using --runtime=nvidia)")
-        except:
-            # Fallback - пробуем --runtime=nvidia
-            cmd += ['--runtime=nvidia']
-            print(f"[INFO] GPU access enabled for {gpu_limit} GPUs (using --runtime=nvidia fallback)")
+                print(f"[ERROR] nvidia-container-cli failed: {result.stderr}")
+                raise Exception("nvidia-container-cli not working")
+                
+        except Exception as e:
+            print(f"[ERROR] GPU setup failed: {e}")
+            raise Exception(f"GPU access is required but setup failed: {e}")
     
     # Добавляем образ и команду запуска
     cmd += [
