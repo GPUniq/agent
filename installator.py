@@ -140,6 +140,7 @@ def fix_docker_permissions():
             print("[INFO] Applied docker group changes")
         except Exception as e:
             print(f"[WARNING] Failed to apply group changes: {e}")
+        
         # Ждем немного и проверяем снова
         time.sleep(3)
         
