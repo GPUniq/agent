@@ -224,6 +224,55 @@ def check_docker_gpu_support():
         print(f"[WARNING] Docker GPU support check failed: {e}")
         return False
 
+def install_nvidia_container_runtime():
+    """Устанавливает и настраивает NVIDIA Container Runtime"""
+    print("[INFO] Installing NVIDIA Container Runtime...")
+    
+    try:
+        # Определяем дистрибутив
+        try:
+            with open('/etc/os-release') as f:
+                os_info = f.read()
+                if 'ubuntu' in os_info.lower() or 'debian' in os_info.lower():
+                    distro = 'ubuntu'
+                else:
+                    distro = 'ubuntu'
+        except:
+            distro = 'ubuntu'
+        
+        if distro == 'ubuntu':
+            # Устанавливаем nvidia-container-toolkit
+            print("[INFO] Installing nvidia-container-toolkit...")
+            subprocess.run(['sudo', 'apt-get', 'update'], check=True)
+            subprocess.run(['sudo', 'apt-get', 'install', '-y', 'nvidia-container-toolkit'], check=True)
+            
+            # Настраиваем Docker daemon
+            print("[INFO] Configuring Docker daemon...")
+            subprocess.run(['sudo', 'nvidia-ctk', 'runtime', 'configure', '--runtime=docker'], check=True)
+            
+            # Перезапускаем Docker
+            print("[INFO] Restarting Docker...")
+            subprocess.run(['sudo', 'systemctl', 'restart', 'docker'], check=True)
+            
+            # Ждем запуска
+            time.sleep(5)
+            
+            # Проверяем установку
+            result = subprocess.run(['nvidia-container-cli', 'info'], capture_output=True, text=True, timeout=10)
+            if result.returncode == 0:
+                print("[INFO] NVIDIA Container Runtime installed successfully")
+                return True
+            else:
+                print(f"[ERROR] NVIDIA Container Runtime installation failed: {result.stderr}")
+                return False
+        else:
+            print(f"[ERROR] Unsupported distribution: {distro}")
+            return False
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to install NVIDIA Container Runtime: {e}")
+        return False
+
 def get_available_resources():
     """Получает информацию о доступных ресурсах системы с учетом уже запущенных контейнеров"""
     try:
@@ -3342,22 +3391,20 @@ def run_docker_container_simple(task):
                         print(f"[ERROR] --gpus all error: {test_result.stderr}")
                         
                         # Попробуем установить/обновить nvidia-container-toolkit
-                        print("[INFO] Attempting to install/update nvidia-container-toolkit...")
+                        print("[INFO] Attempting to install/update NVIDIA Container Runtime...")
                         try:
-                            subprocess.run(['sudo', 'apt-get', 'update'], check=True)
-                            subprocess.run(['sudo', 'apt-get', 'install', '-y', 'nvidia-container-toolkit'], check=True)
-                            subprocess.run(['sudo', 'systemctl', 'restart', 'docker'], check=True)
-                            print("[INFO] nvidia-container-toolkit installed/updated")
-                            
-                            # Проверяем снова
-                            test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi', '--list-gpus']
-                            test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
-                            
-                            if test_result.returncode == 0:
-                                cmd += ['--gpus', 'all']
-                                print(f"[INFO] GPU access fixed, using --gpus all")
+                            if install_nvidia_container_runtime():
+                                # Проверяем снова
+                                test_cmd = ['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi', '--list-gpus']
+                                test_result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+                                
+                                if test_result.returncode == 0:
+                                    cmd += ['--gpus', 'all']
+                                    print(f"[INFO] GPU access fixed, using --gpus all")
+                                else:
+                                    raise Exception("GPU access still not working after installation")
                             else:
-                                raise Exception("GPU access still not working after installation")
+                                raise Exception("Failed to install NVIDIA Container Runtime")
                         except Exception as e:
                             print(f"[ERROR] Failed to fix GPU access: {e}")
                             raise Exception("GPU access is required but not available")
