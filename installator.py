@@ -2649,7 +2649,7 @@ def get_ip_address():
             pass
         
         # Метод 4: Для macOS
-        elif platform.system() == "Darwin":
+        if platform.system() == "Darwin":
             try:
                 # Получаем IP через ifconfig
                 ifconfig_output = subprocess.check_output(['ifconfig']).decode(errors='ignore')
