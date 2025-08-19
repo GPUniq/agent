@@ -4156,6 +4156,7 @@ if __name__ == "__main__":
         print(f"[WARNING] Failed to get memory usage: {e}")
         memory_usage = 0
     
+    
     try:
         gpu_usage_data = get_gpu_usage()
         # Используем среднее значение GPU usage, как для CPU
