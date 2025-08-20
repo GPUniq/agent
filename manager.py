@@ -21,7 +21,6 @@ class Settings:
     ulimit_stack: str = "67108864"  # 64 MiB
     runtime: str = "nvidia"  # --runtime=nvidia
     nvidia_caps: str = "compute,utility"
-    jupyter_port_offset: int = 1  # Смещение порта Jupyter от SSH порта
 
 
 class ContainerManager:
@@ -189,9 +188,6 @@ class ContainerManager:
             print(f"  Username: {ssh_username}")
             print(f"  Port: {ssh_port}")
             print(f"  Host: {ssh_host}")
-            print(f"  Jupyter Port: {ssh_port + self.s.jupyter_port_offset}")
-            print(f"  Jupyter URL: http://{ssh_host}:{ssh_port + self.s.jupyter_port_offset}/lab")
-            print(f"  Jupyter Token: {ssh_password}")
             
             # Получаем выделенные ресурсы из задачи
             gpus_allocated = task_data.get('gpus_allocated', {})
@@ -229,16 +225,8 @@ class ContainerManager:
                 "--ipc=host", "--ulimit", "memlock=-1", "--ulimit", "stack=67108864",
                 "--shm-size", "1g",
                 "-p", f"{ssh_port}:22",
-                "-p", f"{ssh_port + self.s.jupyter_port_offset}:8888",  # Jupyter порт = SSH порт + offset
                 "--restart", "unless-stopped",
             ]
-            
-            # Добавляем переменные окружения для SSH и Jupyter
-            env_vars = [
-                "-e", f"SSH_PASSWORD={ssh_password}",
-                "-e", f"JUPYTER_TOKEN={ssh_password}",  # Используем тот же пароль для Jupyter
-            ]
-            cmd.extend(env_vars)
             
             # Добавляем GPU если есть (legacy режим)
             if gpu_limit > 0:
@@ -253,19 +241,13 @@ class ContainerManager:
             cmd += [
                 docker_image,
                 'bash', '-c',
-                f"DEBIAN_FRONTEND=noninteractive apt-get update && "
-                f"DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server sudo python3 python3-pip && "
-                f"pip3 install jupyterlab && "
+                f"DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server sudo && "
                 f"mkdir -p /var/run/sshd && "
                 f"useradd -m -s /bin/bash {ssh_username} && "
                 f"echo '{ssh_username}:{ssh_password}' | chpasswd && "
                 f"usermod -aG sudo {ssh_username} && "
                 f"sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && "
                 f"sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && "
-                f"mkdir -p /home/{ssh_username}/.jupyter && "
-                f"echo 'c.ServerApp.token = \"{ssh_password}\"' > /home/{ssh_username}/.jupyter/jupyter_server_config.py && "
-                f"chown -R {ssh_username}:{ssh_username} /home/{ssh_username}/.jupyter && "
-                f"su - {ssh_username} -c 'jupyter lab --ip=0.0.0.0 --port=8888 --no-browser --allow-root --ServerApp.token=\"{ssh_password}\" --ServerApp.allow_origin=\"*\"' & "
                 f"/usr/sbin/sshd -D"
             ]
             
@@ -311,9 +293,6 @@ class ContainerManager:
                     'ssh_command': container_info.get('ssh_command', f"ssh {ssh_username}@{ssh_host} -p {ssh_port}"),
                     'ssh_username': ssh_username,
                     'ssh_password': ssh_password,
-                    'jupyter_port': ssh_port + self.s.jupyter_port_offset,
-                    'jupyter_url': f"http://{ssh_host}:{ssh_port + self.s.jupyter_port_offset}/lab",
-                    'jupyter_token': ssh_password,
                     'status': 'running',
                     'allocated_resources': {
                         'cpu_cores': cpu_limit,
