@@ -5,6 +5,8 @@ import argparse
 import re
 import socket
 import subprocess
+import time
+import os
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -29,6 +31,299 @@ class ContainerManager:
         if not quiet:
             print("[RUN]", " ".join(args))
         return subprocess.run(args, check=check, capture_output=capture_output, text=True)
+
+    def check_and_install_docker(self) -> bool:
+        """Проверяет и устанавливает Docker если необходимо"""
+        try:
+            # Проверяем, работает ли Docker
+            result = subprocess.run(['docker', 'ps'], check=True, capture_output=True)
+            print("[INFO] Docker is working correctly")
+            return True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            print("[INFO] Docker not working, attempting to fix...")
+            
+            # Проверяем, установлен ли Docker
+            try:
+                subprocess.run(['docker', '--version'], check=True, capture_output=True)
+                print("[INFO] Docker is installed but not working")
+                
+                # Исправляем права
+                if self.fix_docker_permissions():
+                    print("[INFO] Docker permissions fixed successfully")
+                    return True
+                else:
+                    print("[WARNING] Could not fix Docker permissions")
+                    return False
+                    
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                print("[INFO] Docker not found, please install Docker manually")
+                return False
+
+    def fix_docker_permissions(self) -> bool:
+        """Исправляет права доступа к Docker daemon"""
+        try:
+            print("[INFO] Checking Docker permissions...")
+            
+            # Проверяем, работает ли Docker без sudo
+            try:
+                result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    print("[INFO] Docker permissions are OK")
+                    return True
+            except:
+                pass
+            
+            # Пытаемся исправить права
+            print("[INFO] Fixing Docker permissions...")
+            
+            # Добавляем текущего пользователя в группу docker
+            try:
+                current_user = subprocess.check_output(['whoami']).decode().strip()
+                subprocess.run(['sudo', 'usermod', '-aG', 'docker', current_user], check=True)
+                print(f"[INFO] Added user {current_user} to docker group")
+            except Exception as e:
+                print(f"[WARNING] Failed to add user to docker group: {e}")
+            
+            # Перезапускаем Docker service
+            try:
+                subprocess.run(['sudo', 'systemctl', 'restart', 'docker'], check=True)
+                print("[INFO] Docker service restarted")
+            except Exception as e:
+                print(f"[WARNING] Failed to restart Docker service: {e}")
+            
+            # Ждем немного и проверяем снова
+            time.sleep(3)
+            
+            # Проверяем Docker без sudo
+            try:
+                result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    print("[INFO] Docker permissions fixed successfully")
+                    return True
+            except:
+                pass
+            
+            return False
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to fix Docker permissions: {e}")
+            return False
+
+    def check_docker_gpu_support(self) -> bool:
+        """Проверяет поддержку GPU в Docker"""
+        try:
+            print("[INFO] Checking Docker GPU support...")
+            
+            # Проверяем наличие nvidia-container-toolkit
+            try:
+                result = subprocess.run(['nvidia-container-cli', 'info'], 
+                                      capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    print("[INFO] nvidia-container-toolkit found")
+                    
+                    # Проверяем, работает ли --gpus флаг
+                    try:
+                        result = subprocess.run(['docker', 'run', '--rm', '--gpus', 'all', 'ubuntu:20.04', 'nvidia-smi'], 
+                                              capture_output=True, text=True, timeout=30)
+                        if result.returncode == 0:
+                            print("[INFO] Docker GPU support confirmed with --gpus flag")
+                            return True
+                    except:
+                        pass
+                    
+                    # Проверяем --runtime=nvidia
+                    try:
+                        result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
+                                              capture_output=True, text=True, timeout=30)
+                        if result.returncode == 0:
+                            print("[INFO] Docker GPU support confirmed with --runtime=nvidia")
+                            return True
+                    except:
+                        pass
+                    
+                    print("[WARNING] nvidia-container-toolkit found but GPU access not working")
+                    return False
+            except:
+                pass
+
+            # Проверяем наличие nvidia-docker
+            try:
+                result = subprocess.run(['docker', 'run', '--rm', '--runtime=nvidia', 'ubuntu:20.04', 'nvidia-smi'], 
+                                      capture_output=True, text=True, timeout=30)
+                if result.returncode == 0:
+                    print("[INFO] Docker GPU support confirmed with nvidia-docker")
+                    return True
+            except:
+                pass
+            
+            print("[WARNING] Docker GPU support not available")
+            return False
+        except Exception as e:
+            print(f"[WARNING] Docker GPU support check failed: {e}")
+            return False
+
+    def run_docker_container_simple(self, task: dict) -> Optional[dict]:
+        """Простая версия создания Docker контейнера с SSH для задач от API"""
+        try:
+            task_data = task.get('task_data', {})
+            container_info = task.get('container_info', {})
+            
+            # Получаем docker_image из task_data
+            docker_image = task_data.get('docker_image')
+            if not docker_image:
+                print("[ERROR] No docker_image specified in task")
+                return None
+            
+            # Получаем SSH credentials из container_info
+            ssh_username = container_info.get('ssh_username')
+            ssh_password = container_info.get('ssh_password')
+            ssh_port = container_info.get('ssh_port')
+            ssh_host = container_info.get('ssh_host')
+            
+            if not all([ssh_username, ssh_password, ssh_port]):
+                print("[ERROR] Missing SSH credentials in container_info")
+                return None
+            
+            print(f"[INFO] Using SSH credentials from task:")
+            print(f"  Username: {ssh_username}")
+            print(f"  Port: {ssh_port}")
+            print(f"  Host: {ssh_host}")
+            
+            # Получаем выделенные ресурсы из задачи
+            gpus_allocated = task_data.get('gpus_allocated', {})
+            cpus_allocated = task_data.get('cpus_allocated', {})
+            ram_allocated = task_data.get('ram_allocated', 0)
+            
+            # Получаем доступные ресурсы для проверки лимитов
+            from hardware_analyzer import HardwareAnalyzer
+            hardware_analyzer = HardwareAnalyzer()
+            available_resources = hardware_analyzer.get_available_resources()
+            
+            # Рассчитываем лимиты ресурсов с проверкой доступности
+            cpu_limit = cpus_allocated.get('cores') if cpus_allocated else 1
+            if available_resources and cpu_limit > available_resources.get('cpu_count', 1):
+                print(f"[WARNING] Requested CPU cores ({cpu_limit}) exceeds available ({available_resources.get('cpu_count', 1)}), using available")
+                cpu_limit = available_resources.get('cpu_count', 1)
+            
+            ram_limit_gb = ram_allocated if ram_allocated else 2
+            if available_resources and ram_limit_gb > available_resources.get('available_ram_gb', 2):
+                print(f"[WARNING] Requested RAM ({ram_limit_gb}GB) exceeds available ({available_resources.get('available_ram_gb', 2)}GB), using available")
+                ram_limit_gb = int(available_resources.get('available_ram_gb', 2))
+            
+            gpu_limit = gpus_allocated.get('count') if gpus_allocated else 0
+            if available_resources and gpu_limit > available_resources.get('gpu_count', 0):
+                print(f"[WARNING] Requested GPUs ({gpu_limit}) exceeds available ({available_resources.get('gpu_count', 0)}), using available")
+                gpu_limit = available_resources.get('gpu_count', 0)
+            
+            task_id = task.get('id', int(time.time()))
+            container_name = f"task_{task_id}_{ssh_username}"
+            
+            # Собираем docker run команду
+            cmd = [
+                "docker", "run", "-d",
+                "--name", container_name,
+                "--ipc=host", "--ulimit", "memlock=-1", "--ulimit", "stack=67108864",
+                "--shm-size", "1g",
+                "-p", f"{ssh_port}:22",
+                "--restart", "unless-stopped",
+            ]
+            
+            # Добавляем GPU если есть
+            if gpu_limit > 0:
+                cmd += ["--gpus", "all"]
+                print(f"[INFO] GPU access enabled for {gpu_limit} GPUs")
+            
+            # Добавляем образ и команду запуска
+            cmd += [
+                docker_image,
+                'bash', '-c',
+                f"DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-server sudo && "
+                f"mkdir -p /var/run/sshd && "
+                f"useradd -m -s /bin/bash {ssh_username} && "
+                f"echo '{ssh_username}:{ssh_password}' | chpasswd && "
+                f"usermod -aG sudo {ssh_username} && "
+                f"sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin no/' /etc/ssh/sshd_config && "
+                f"sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config && "
+                f"/usr/sbin/sshd -D"
+            ]
+            
+            # Проверяем права Docker
+            use_sudo = False
+            try:
+                result = subprocess.run(['docker', 'ps'], capture_output=True, text=True, timeout=5)
+                if result.returncode != 0:
+                    use_sudo = True
+            except:
+                use_sudo = True
+            
+            if use_sudo:
+                cmd = ['sudo'] + cmd
+            
+            print(f"[INFO] Starting container with command: {' '.join(cmd)}")
+            
+            try:
+                print(f"[INFO] Executing Docker command...")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                
+                if result.returncode != 0:
+                    print(f"[ERROR] Docker command failed with return code {result.returncode}")
+                    print(f"[ERROR] Docker stderr: {result.stderr}")
+                    print(f"[ERROR] Docker stdout: {result.stdout}")
+                    return None
+                else:
+                    container_id = result.stdout.strip()
+                    print(f"[INFO] Container started with ID: {container_id}")
+                
+                # Ожидаем готовности SSH
+                print(f"[INFO] Waiting for SSH service to be ready on port {ssh_port}...")
+                if self.wait_for_ssh_ready('localhost', ssh_port):
+                    print(f"[INFO] SSH service is ready on port {ssh_port}")
+                else:
+                    print(f"[WARNING] SSH service not ready within timeout on port {ssh_port}")
+                
+                return {
+                    'container_id': container_id,
+                    'container_name': container_name,
+                    'ssh_port': ssh_port,
+                    'ssh_host': ssh_host,
+                    'ssh_command': container_info.get('ssh_command', f"ssh {ssh_username}@{ssh_host} -p {ssh_port}"),
+                    'ssh_username': ssh_username,
+                    'ssh_password': ssh_password,
+                    'status': 'running',
+                    'allocated_resources': {
+                        'cpu_cores': cpu_limit,
+                        'ram_gb': ram_limit_gb,
+                        'gpu_count': gpu_limit,
+                        'storage_gb': 20,
+                        'gpu_support': gpu_limit > 0
+                    }
+                }
+                
+            except subprocess.TimeoutExpired:
+                print("[ERROR] Docker operation timed out")
+                return None
+            except Exception as e:
+                print(f"[ERROR] Docker operation failed: {e}")
+                return None
+                
+        except Exception as e:
+            print(f"[ERROR] Container creation failed: {e}")
+            return None
+
+    def wait_for_ssh_ready(self, host: str, port: int, timeout: int = 60) -> bool:
+        """Ждет, пока SSH сервис будет готов к подключению"""
+        start_time = time.time()
+        while time.time() - start_time < timeout:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(2)
+                    result = s.connect_ex((host, port))
+                    if result == 0:
+                        return True
+            except:
+                pass
+            time.sleep(2)
+        return False
 
     def _exists(self, name: str) -> bool:
         out = self._run(["docker", "ps", "-a", "--format", "{{.Names}}"], capture_output=True).stdout.splitlines()
