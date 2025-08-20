@@ -228,10 +228,14 @@ class ContainerManager:
                 "--restart", "unless-stopped",
             ]
             
-            # Добавляем GPU если есть
+            # Добавляем GPU если есть (legacy режим)
             if gpu_limit > 0:
-                cmd += ["--gpus", "all"]
-                print(f"[INFO] GPU access enabled for {gpu_limit} GPUs")
+                cmd += [
+                    "--runtime", "nvidia",
+                    "-e", "NVIDIA_DRIVER_CAPABILITIES=compute,utility",
+                    "-e", "NVIDIA_VISIBLE_DEVICES=all"
+                ]
+                print(f"[INFO] GPU access enabled for {gpu_limit} GPUs using legacy --runtime=nvidia")
             
             # Добавляем образ и команду запуска
             cmd += [
