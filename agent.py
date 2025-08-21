@@ -359,6 +359,7 @@ class Agent:
             }
             
             print(f"[INFO] Container created successfully:")
+            print(f"  Container ID: {result['container_id']}")
             print(f"  Container Name: {result['container_name']}")
             print(f"  SSH Host: {result['ssh_host']}")
             print(f"  SSH Port: {result['ssh_port']}")
