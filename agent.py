@@ -329,7 +329,7 @@ class Agent:
             jup_port = ssh_port + 1
             
             # Используем ContainerManager для создания контейнера
-            self.container_manager.start(
+            container_id = self.container_manager.start(
                 container_name=container_name,
                 ssh_port=ssh_port,
                 jup_port=jup_port,
@@ -341,6 +341,7 @@ class Agent:
             
             # Формируем результат
             result = {
+                'container_id': container_id,
                 'container_name': container_name,
                 'ssh_port': ssh_port,
                 'ssh_host': ssh_host,
