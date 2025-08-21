@@ -114,6 +114,7 @@ class ContainerManager:
         # legacy GPU runtime 
         env = [
             "-e", f"SSH_PASSWORD={ssh_password}",
+            "-e", f"SSH_USERNAME={ssh_username}",
             "-e", f"JUPYTER_TOKEN={jupyter_token}",
             "-e", f"NVIDIA_DRIVER_CAPABILITIES={self.s.nvidia_caps}",
             "-e", f"NVIDIA_VISIBLE_DEVICES={'all' if not gpus else gpus}",
@@ -134,6 +135,42 @@ class ContainerManager:
         ]
         result = self._run(args, capture_output=True)
         container_id = result.stdout.strip()
+
+        # Ensure requested SSH user exists inside the container and has the provided password
+        try:
+            # Create user if not exists
+            self._run([
+                "docker", "exec", name, "bash", "-lc",
+                f"id -u {ssh_username} >/dev/null 2>&1 || useradd -m -s /bin/bash {ssh_username}"
+            ], check=False, capture_output=True, quiet=True)
+
+            # Set password
+            self._run([
+                "docker", "exec", name, "bash", "-lc",
+                f"echo '{ssh_username}:{ssh_password}' | chpasswd"
+            ], check=False, capture_output=True, quiet=True)
+
+            # Harden and ensure SSH allows password auth for this setup
+            self._run([
+                "docker", "exec", name, "bash", "-lc",
+                "sed -i 's/^#\\?PasswordAuthentication .*/PasswordAuthentication yes/' /etc/ssh/sshd_config && "
+                "sed -i 's/^#\\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config || true"
+            ], check=False, capture_output=True, quiet=True)
+
+            # Reload or start sshd
+            self._run([
+                "docker", "exec", name, "bash", "-lc",
+                "mkdir -p /var/run/sshd && (sshd -t && (pkill -HUP sshd || /usr/sbin/sshd)) || true"
+            ], check=False, capture_output=True, quiet=True)
+        except Exception:
+            pass
+
+        # Wait for SSH readiness on the mapped host port
+        print(f"[INFO] Waiting for SSH service to be ready on port {ssh_port}...")
+        if self.wait_for_ssh_ready('127.0.0.1', ssh_port):
+            print(f"[INFO] SSH service is ready on port {ssh_port}")
+        else:
+            print(f"[WARNING] SSH service not confirmed within timeout on port {ssh_port}")
 
         print("[OK]   Контейнер создан и запущен.")
         print(f"[INFO] Name:    {name}")
