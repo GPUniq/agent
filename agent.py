@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional
 
 from hardware_analyzer import HardwareAnalyzer
 from api_client import APIClient
-from manager import ContainerManager
+from clean_manager import ContainerManager
 
 # Константы
 AGENT_ID_FILE = ".agent_id"
@@ -293,17 +293,76 @@ class Agent:
         try:
             print(f"[INFO] Processing task: {task.get('id')}")
             
-            # Используем ContainerManager для создания контейнера
-            result = self.container_manager.run_docker_container_simple(task)
+            task_data = task.get('task_data', {})
+            container_info = task.get('container_info', {})
             
-            if result:
-                print(f"[INFO] Container created successfully:")
-                print(f"  Container ID: {result['container_id']}")
-                print(f"  Container Name: {result['container_name']}")
-                print(f"  SSH Host: {result['ssh_host']}")
-                print(f"  SSH Port: {result['ssh_port']}")
-                print(f"  SSH Command: {result['ssh_command']}")
-                print(f"  Allocated Resources: {result.get('allocated_resources', 'N/A')}")
+            # Получаем docker_image из task_data
+            docker_image = task_data.get('docker_image')
+            if not docker_image:
+                print("[ERROR] No docker_image specified in task")
+                return None
+            
+            # Получаем SSH credentials из container_info
+            ssh_username = container_info.get('ssh_username')
+            ssh_password = container_info.get('ssh_password')
+            ssh_port = container_info.get('ssh_port')
+            ssh_host = container_info.get('ssh_host')
+            
+            if not all([ssh_username, ssh_password, ssh_port]):
+                print("[ERROR] Missing SSH credentials in container_info")
+                return None
+            
+            print(f"[INFO] Using SSH credentials from task:")
+            print(f"  Username: {ssh_username}")
+            print(f"  Port: {ssh_port}")
+            print(f"  Host: {ssh_host}")
+            
+            # Получаем выделенные ресурсы из задачи
+            gpus_allocated = task_data.get('gpus_allocated', {})
+            gpu_limit = gpus_allocated.get('count') if gpus_allocated else 0
+            
+            # Формируем имя контейнера
+            task_id = task.get('id', int(time.time()))
+            container_name = f"task_{task_id}_{ssh_username}"
+            
+            # Вычисляем Jupyter порт (на 1 больше SSH порта)
+            jup_port = ssh_port + 1
+            
+            # Используем ContainerManager для создания контейнера
+            self.container_manager.start(
+                container_name=container_name,
+                ssh_port=ssh_port,
+                jup_port=jup_port,
+                ssh_password=ssh_password,
+                jupyter_token=ssh_password,  # Используем тот же пароль для Jupyter
+                ssh_username=ssh_username,
+                gpus="all" if gpu_limit > 0 else None
+            )
+            
+            # Формируем результат
+            result = {
+                'container_name': container_name,
+                'ssh_port': ssh_port,
+                'ssh_host': ssh_host,
+                'ssh_command': container_info.get('ssh_command', f"ssh {ssh_username}@{ssh_host} -p {ssh_port}"),
+                'ssh_username': ssh_username,
+                'ssh_password': ssh_password,
+                'status': 'running',
+                'allocated_resources': {
+                    'cpu_cores': task_data.get('cpus_allocated', {}).get('cores', 1),
+                    'ram_gb': task_data.get('ram_allocated', 2),
+                    'gpu_count': gpu_limit,
+                    'storage_gb': 20,
+                    'gpu_support': gpu_limit > 0
+                }
+            }
+            
+            print(f"[INFO] Container created successfully:")
+            print(f"  Container Name: {result['container_name']}")
+            print(f"  SSH Host: {result['ssh_host']}")
+            print(f"  SSH Port: {result['ssh_port']}")
+            print(f"  SSH Command: {result['ssh_command']}")
+            print(f"  Allocated Resources: {result.get('allocated_resources', 'N/A')}")
             
             return result
                 

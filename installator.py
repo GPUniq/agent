@@ -4205,7 +4205,7 @@ if __name__ == "__main__":
         "status": "online",
         "cpu_usage": cpu_usage,
         "memory_usage": memory_usage,
-        "gpu_usage": gpu_usage,  # Теперь это число, а не словарь
+        "gpu_usage": gpu_usage,
         "disk_usage": disk_usage,
         "network_usage": network_usage,
         "cpu_temperature": cpu_temperature,
