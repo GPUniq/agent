@@ -73,7 +73,7 @@ class ContainerManager:
         if bad:
             raise RuntimeError(f"Порты заняты: {', '.join(bad)}")
 
-    def start(self, container_name: str, ssh_port: int, jup_port: int, ssh_password: str, jupyter_token: str, ssh_username: str = "dev", gpus: Optional[str] = None) -> None:
+    def start(self, container_name: str, ssh_port: int, jup_port: int, ssh_password: str, jupyter_token: str, ssh_username: str = "dev", gpus: Optional[str] = None) -> Optional[str]:
         """
         Запустить/создать контейнер с указанными параметрами.
         - container_name: имя контейнера
@@ -132,12 +132,15 @@ class ContainerManager:
             "--restart", "unless-stopped",
             self.s.image
         ]
-        self._run(args)
+        result = self._run(args, capture_output=True)
+        container_id = result.stdout.strip()
 
         print("[OK]   Контейнер создан и запущен.")
         print(f"[INFO] Name:    {name}")
         print(f"[INFO] SSH:     ssh -p {ssh_port} {ssh_username}@<host>  (пароль: {ssh_password})")
         print(f"[INFO] Jupyter: http://<host>:{jup_port}/lab (token:  {jupyter_token})")
+        
+        return container_id
 
     def stop(self, container_name: Optional[str] = None) -> None:
         """
