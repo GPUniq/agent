@@ -73,7 +73,7 @@ class ContainerManager:
         if bad:
             raise RuntimeError(f"Порты заняты: {', '.join(bad)}")
 
-    def start(self, container_name: str, ssh_port: int, jup_port: int, ssh_password: str, jupyter_token: str, ssh_username: str = "dev", gpus: Optional[str] = None) -> Optional[str]:
+    def start(self, container_name: str, ssh_port: int, jup_port: int, ssh_password: str, jupyter_token: str, ssh_username: str = "root", gpus: Optional[str] = None) -> Optional[str]:
         """
         Запустить/создать контейнер с указанными параметрами.
         - container_name: имя контейнера
@@ -81,7 +81,7 @@ class ContainerManager:
         - jup_port: Jupyter порт
         - ssh_password: пароль SSH
         - jupyter_token: токен Jupyter
-        - ssh_username: имя пользователя SSH (по умолчанию "dev")
+        - ssh_username: имя пользователя SSH (по умолчанию "root" - системный пользователь)
         - gpus: GPU (по умолчанию все или список '0,2,3')
         """
         name = container_name
@@ -331,7 +331,7 @@ def _parse_cli() -> argparse.Namespace:
     sp.add_argument("jup_port", type=int, help="Jupyter порт")
     sp.add_argument("ssh_password", help="пароль SSH")
     sp.add_argument("jupyter_token", help="токен Jupyter")
-    sp.add_argument("--ssh_username", default="dev", help="имя пользователя SSH (по умолчанию: dev)")
+    sp.add_argument("--ssh_username", default="root", help="имя пользователя SSH (по умолчанию: root)")
     sp.add_argument("--gpus", default=None, help="список GPU, напр. '0,2,3'. По умолчанию: все(all)")
 
     sp2 = sub.add_parser("stop", help="stop and remove containers")
@@ -358,9 +358,9 @@ if __name__ == "__main__":
 
 """
 CLI:
-    python clean_manager.py start my-container 2222 2223 mypass mytoken            # все GPU
+    python clean_manager.py start my-container 2222 2223 mypass mytoken            # все GPU, пользователь root
     python clean_manager.py start my-container 2222 2223 mypass mytoken --gpus 0,2,3  # только указанные GPU
-    python clean_manager.py start my-container 2222 2223 mypass mytoken --ssh_username user  # с пользователем
+    python clean_manager.py start my-container 2222 2223 mypass mytoken --ssh_username dev  # с другим пользователем
     python clean_manager.py stop                # остановить и удалить ВСЕ контейнеры
     python clean_manager.py stop my-container   # остановить и удалить конкретный контейнер
 Если предварительно прописать chmod +x clean_manager.py, то можно запускать так:
@@ -369,6 +369,6 @@ CLI:
 As a library:
     from clean_manager import ContainerManager
     m = ContainerManager()
-    m.start("my-container", 2222, 2223, "mypass", "mytoken", ssh_username="user", gpus="0,2")
+    m.start("my-container", 2222, 2223, "mypass", "mytoken", ssh_username="root", gpus="0,2")
     m.stop("my-container")
 """
