@@ -296,11 +296,58 @@ class Agent:
             task_data = task.get('task_data', {})
             container_info = task.get('container_info', {})
             
-            # Получаем docker_image из task_data
+            # Получаем docker_image и ресурсы из task_data
             docker_image = task_data.get('docker_image')
             if not docker_image:
                 print("[ERROR] No docker_image specified in task")
                 return None
+
+            # GPU allocation
+            gpu_required = task_data.get('gpu_required', 0) or 0
+            gpu_indices = task_data.get('gpu_enabled_indices') or []
+            gpus_param = None
+            if gpu_required and isinstance(gpu_indices, list) and len(gpu_indices) > 0:
+                try:
+                    gpus_param = ",".join(str(int(i)) for i in gpu_indices)
+                except Exception:
+                    gpus_param = "all"
+            elif gpu_required:
+                gpus_param = "all"
+
+            # CPU allocation: ranges to cpuset string
+            cpu_allocated_ranges = task_data.get('cpu_allocated_ranges') or []
+            cpuset_cpus = None
+            if isinstance(cpu_allocated_ranges, list) and len(cpu_allocated_ranges) > 0:
+                try:
+                    ranges = []
+                    for r in cpu_allocated_ranges:
+                        if isinstance(r, (list, tuple)) and len(r) == 2:
+                            start, end = int(r[0]), int(r[1])
+                            ranges.append(f"{start}-{end}")
+                    if ranges:
+                        cpuset_cpus = ",".join(ranges)
+                except Exception:
+                    cpuset_cpus = None
+
+            # RAM and storage
+            ram_allocated_gb = task_data.get('ram_allocated_gb')
+            storage_allocated_gb = task_data.get('storage_allocated_gb')
+            try:
+                memory_gb = int(ram_allocated_gb) if ram_allocated_gb is not None else None
+            except Exception:
+                memory_gb = None
+            try:
+                storage_gb = int(storage_allocated_gb) if storage_allocated_gb is not None else None
+            except Exception:
+                storage_gb = None
+
+            # shm-size: int(RAM/2), если RAM задан
+            shm_size_gb = None
+            if memory_gb is not None and memory_gb > 0:
+                try:
+                    shm_size_gb = max(1, int(memory_gb / 2))
+                except Exception:
+                    shm_size_gb = None
             
             # Получаем SSH credentials из container_info
             # Username теперь опционален и всегда используем "root" как значение по умолчанию
@@ -338,7 +385,13 @@ class Agent:
                 ssh_password=ssh_password,
                 jupyter_token=ssh_password,  # Используем тот же пароль для Jupyter
                 ssh_username=ssh_username,
-                gpus="all" if gpu_limit > 0 else None
+                gpus=gpus_param,
+                image=docker_image,
+                cpuset_cpus=cpuset_cpus,
+                memory_gb=memory_gb,
+                memory_swap_gb=memory_gb,
+                shm_size_gb=shm_size_gb,
+                storage_gb=storage_gb
             )
             
             # Формируем результат
@@ -352,11 +405,12 @@ class Agent:
                 'ssh_password': ssh_password,
                 'status': 'running',
                 'allocated_resources': {
-                    'cpu_cores': task_data.get('cpus_allocated', {}).get('cores', 1),
-                    'ram_gb': task_data.get('ram_allocated', 2),
-                    'gpu_count': gpu_limit,
-                    'storage_gb': 20,
-                    'gpu_support': gpu_limit > 0
+                    'cpu_cpuset': cpuset_cpus,
+                    'ram_gb': memory_gb,
+                    'gpu_count': gpu_required,
+                    'gpu_devices': gpus_param,
+                    'storage_gb': storage_gb,
+                    'gpu_support': bool(gpus_param)
                 }
             }
             

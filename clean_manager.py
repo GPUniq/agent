@@ -73,7 +73,7 @@ class ContainerManager:
         if bad:
             raise RuntimeError(f"Порты заняты: {', '.join(bad)}")
 
-    def start(self, container_name: str, ssh_port: int, jup_port: int, ssh_password: str, jupyter_token: str, ssh_username: str = "root", gpus: Optional[str] = None) -> Optional[str]:
+    def start(self, container_name: str, ssh_port: int, jup_port: int, ssh_password: str, jupyter_token: str, ssh_username: str = "root", gpus: Optional[str] = None, image: Optional[str] = None, cpuset_cpus: Optional[str] = None, memory_gb: Optional[int] = None, memory_swap_gb: Optional[int] = None, shm_size_gb: Optional[int] = None, storage_gb: Optional[int] = None) -> Optional[str]:
         """
         Запустить/создать контейнер с указанными параметрами.
         - container_name: имя контейнера
@@ -102,9 +102,11 @@ class ContainerManager:
 
         self._assert_ports_free(ssh_port, jup_port)
 
-        if not self._docker_images_has(self.s.image):
+        image_to_run = image or self.s.image
+
+        if not self._docker_images_has(image_to_run):
             raise RuntimeError(
-                f"Образ '{self.s.image}' не найден локально. "
+                f"Образ '{image_to_run}' не найден локально. "
                 f"Собери его или docker pull (если публичный)."
             )
 
@@ -124,14 +126,32 @@ class ContainerManager:
             "--name", name,
             "--runtime", self.s.runtime,
             "--ipc=host", "--ulimit", "memlock=-1", "--ulimit", f"stack={self.s.ulimit_stack}",
-            "--shm-size", self.s.shm_size,
+            # shm-size (overridable)
+            "--shm-size", (f"{shm_size_gb}g" if shm_size_gb is not None else self.s.shm_size),
             "-p", f"{ssh_port}:22",
             "-p", f"{jup_port}:8888",
             *env,
             "-v", f"{work_vol}:/work",
             "--restart", "unless-stopped",
-            self.s.image
         ]
+
+        # CPU pinning
+        if cpuset_cpus:
+            args.extend(["--cpuset-cpus", cpuset_cpus])
+
+        # Memory limits
+        if memory_gb is not None:
+            args.extend(["--memory", f"{memory_gb}g"])
+            # memory-swap: if not provided, pin to same value
+            swap_gb = memory_swap_gb if memory_swap_gb is not None else memory_gb
+            args.extend(["--memory-swap", f"{swap_gb}g"])
+
+        # Storage size (may depend on storage driver support)
+        if storage_gb is not None:
+            args.extend(["--storage-opt", f"size={storage_gb}G"])
+
+        # Finally, the image to run
+        args.append(image_to_run)
         result = self._run(args, capture_output=True)
         container_id = result.stdout.strip()
 
