@@ -125,7 +125,7 @@ class ContainerManager:
             "docker", "run", "-d",
             "--name", name,
             "--runtime", self.s.runtime,
-            "--ipc=host", "--ulimit", "memlock=-1", "--ulimit", f"stack={self.s.ulimit_stack}",
+            "--ulimit", "memlock=-1", "--ulimit", f"stack={self.s.ulimit_stack}",
             # shm-size (overridable)
             "--shm-size", (f"{shm_size_gb}g" if shm_size_gb is not None else self.s.shm_size),
             "-p", f"{ssh_port}:22",
