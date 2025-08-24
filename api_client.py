@@ -124,6 +124,9 @@ class APIClient:
                     
                     if task_id is not None and task_data is not None and container_info is not None:
                         print(f"[INFO] New task received:")
+                        
+                        print(f"  Data: {data}")
+
                         print(f"  Task ID: {task_id}")
                         print(f"  Docker Image: {task_data.get('docker_image')}")
                         print(f"  SSH Username: {container_info.get('ssh_username')}")
