@@ -303,12 +303,14 @@ class Agent:
                 return None
             
             # Получаем SSH credentials из container_info
-            ssh_username = container_info.get('ssh_username')
+            # Username теперь опционален и всегда используем "root" как значение по умолчанию
+            ssh_username = container_info.get('ssh_username') or "root"
             ssh_password = container_info.get('ssh_password')
             ssh_port = container_info.get('ssh_port')
             ssh_host = container_info.get('ssh_host')
             
-            if not all([ssh_username, ssh_password, ssh_port]):
+            # Username больше не обязателен; требуем только пароль и порт
+            if not all([ssh_password, ssh_port]):
                 print("[ERROR] Missing SSH credentials in container_info")
                 return None
             
@@ -321,13 +323,13 @@ class Agent:
             gpus_allocated = task_data.get('gpus_allocated', {})
             gpu_limit = gpus_allocated.get('count') if gpus_allocated else 0
             
-            # Формируем имя контейнера
+            # Формируем имя контейнера (без зависимости от username)
             task_id = task.get('id', int(time.time()))
-            container_name = f"task_{task_id}_{ssh_username}"
+            container_name = f"task_{task_id}"
             
             # Вычисляем Jupyter порт (на 1 больше SSH порта)
             jup_port = ssh_port + 1
-            
+
             # Используем ContainerManager для создания контейнера
             container_id = self.container_manager.start(
                 container_name=container_name,
@@ -345,7 +347,7 @@ class Agent:
                 'container_name': container_name,
                 'ssh_port': ssh_port,
                 'ssh_host': ssh_host,
-                'ssh_command': container_info.get('ssh_command', f"ssh {ssh_username}@{ssh_host} -p {ssh_port}"),
+                'ssh_command': container_info.get('ssh_command', f"ssh root@{ssh_host} -p {ssh_port}"),
                 'ssh_username': ssh_username,
                 'ssh_password': ssh_password,
                 'status': 'running',
