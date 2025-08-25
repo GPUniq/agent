@@ -9,10 +9,8 @@ import threading
 import subprocess
 import socket
 import re
-import importlib
-import shutil
-import tempfile
-import site
+import psutil
+from typing import Dict, Any, Optional
 
 def _ensure_python_packages():
     """Ensure required third-party Python packages are installed before imports.
@@ -247,11 +245,7 @@ def _ensure_python_packages():
             sys.exit(1)
 
 
-# Ensure dependencies before importing third-party modules elsewhere
-_ensure_python_packages()
-
-import psutil
-from typing import Dict, Any, Optional
+# Dependencies are expected to be installed via requirements.txt
 
 from hardware_analyzer import HardwareAnalyzer
 from api_client import APIClient
