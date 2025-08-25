@@ -11,6 +11,8 @@ import socket
 import re
 import importlib
 import shutil
+import tempfile
+import site
 
 def _ensure_python_packages():
     """Ensure required third-party Python packages are installed before imports.
@@ -21,6 +23,36 @@ def _ensure_python_packages():
         "psutil",
         "requests",
     ]
+
+    def _has_pip(py_exec: str) -> bool:
+        try:
+            return subprocess.call([py_exec, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+        except Exception:
+            return False
+
+    def _install_pip_via_get_pip(py_exec: str, use_user: bool) -> int:
+        try:
+            import urllib.request  # stdlib
+            url = "https://bootstrap.pypa.io/get-pip.py"
+            with tempfile.NamedTemporaryFile(delete=False, suffix="_get-pip.py") as tf:
+                tmp_path = tf.name
+            try:
+                with urllib.request.urlopen(url, timeout=30) as resp, open(tmp_path, "wb") as out:
+                    out.write(resp.read())
+            except Exception:
+                return 1
+            cmd = [py_exec, tmp_path]
+            if use_user:
+                cmd.append("--user")
+            try:
+                return subprocess.call(cmd)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+        except Exception:
+            return 1
 
     for package_name in required_packages:
         try:
@@ -47,6 +79,44 @@ def _ensure_python_packages():
         except Exception:
             is_root = False
 
+        # Ensure we have pip first
+        if not _has_pip(python_executable):
+            tried_any = False
+            # Try ensurepip
+            try:
+                import ensurepip  # type: ignore
+                tried_any = True
+                ensurepip.bootstrap()
+            except Exception:
+                pass
+            # Recheck
+            if not _has_pip(python_executable):
+                # Try apt-get only if root or sudo non-interactive works
+                apt_get = shutil.which("apt-get")
+                sudo = shutil.which("sudo")
+                sudo_ok = False
+                try:
+                    if sudo and not is_root:
+                        sudo_ok = subprocess.call([sudo, "-n", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+                except Exception:
+                    sudo_ok = False
+                if apt_get and (is_root or sudo_ok):
+                    print("[INFO] Installing python3-pip via apt to proceed with dependency installation...")
+                    try:
+                        base = [] if is_root else [sudo, "-n"]
+                        subprocess.call(base + [apt_get, "update", "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.call(base + [apt_get, "install", "-y", "python3-pip"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    except Exception:
+                        pass
+            # Recheck
+            if not _has_pip(python_executable):
+                # Try get-pip.py (user space)
+                gp_rc = _install_pip_via_get_pip(python_executable, use_user=not is_root)
+                if gp_rc != 0 and is_root:
+                    # If root install failed with --user, retry system-wide
+                    _install_pip_via_get_pip(python_executable, use_user=False)
+
+        # Now try pip install of the package
         rc = _pip_install(use_user=not is_root)
 
         # If pip missing, try ensurepip then install again
@@ -58,28 +128,25 @@ def _ensure_python_packages():
             except Exception:
                 pass
 
-        # On Debian/Ubuntu, attempt to install python3-pip via apt-get
-        if rc != 0:
-            apt_get = shutil.which("apt-get")
-            if apt_get:
-                print("[INFO] Installing python3-pip via apt to proceed with dependency installation...")
-                try:
-                    # Use sudo if available and not root; run non-interactively
-                    sudo = shutil.which("sudo")
-                    base = [] if is_root else ([sudo, "-n"] if sudo else [])
-                    if base:
-                        subprocess.call(base + [apt_get, "update", "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.call(base + [apt_get, "install", "-y", "python3-pip"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    else:
-                        subprocess.call([apt_get, "update", "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        subprocess.call([apt_get, "install", "-y", "python3-pip"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                except Exception:
-                    pass
+        # If install failed and pip was missing earlier, try get-pip as a last resort
+        if rc != 0 and not _has_pip(python_executable):
+            gp_rc = _install_pip_via_get_pip(python_executable, use_user=not is_root)
+            if gp_rc == 0:
                 rc = _pip_install(use_user=not is_root)
 
         if rc != 0:
+            # Try to import from user site by updating sys.path (in case pip installed to user site only)
+            try:
+                user_site = site.getusersitepackages()
+                if user_site and user_site not in sys.path:
+                    sys.path.append(user_site)
+                    importlib.invalidate_caches()
+                    importlib.import_module(package_name)
+                    continue
+            except Exception:
+                pass
             print(f"[ERROR] Could not install required package '{package_name}'. "
-                  f"Please install it manually using: {python_executable} -m pip install {package_name}")
+                  f"Please ensure network access or install manually: {python_executable} -m pip install --user {package_name}")
             sys.exit(1)
 
 
