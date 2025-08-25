@@ -51,20 +51,55 @@ docker run --rm hello-world
 
 ### NVIDIA Container Toolkit
 
-Если планируется запуск контейнеров с GPU (NVIDIA), установите Toolkit:
+Примечание: на Ubuntu 24.04 официальный список NVIDIA для libnvidia-container может отсутствовать. Используйте список для Ubuntu 22.04 (jammy) — он совместим с 24.04.
 ```bash
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit.gpg
+# 1) Ключ
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+sudo install -m 0755 -d /usr/share/keyrings
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+  sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit.gpg
+
+# 2) Репозиторий (jammy, совместим с 24.04)
+distribution=ubuntu22.04
 curl -fsSL https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | \
   sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit.gpg] https://#g' | \
   sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+# 3) Установка и настройка
 sudo apt update
 sudo apt install -y nvidia-container-toolkit
-sudo nvidia-ctk runtime configure --runtime=docker
+sudo nvidia-ctk runtime configure --runtime=docker || true
 sudo systemctl restart docker
+```
+Если `nvidia-ctk` недоступен, добавьте runtime вручную:
+```bash
+sudo tee /etc/docker/daemon.json >/dev/null <<'JSON'
+{
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime",
+      "runtimeArgs": []
+    }
+  }
+}
+JSON
+sudo systemctl restart docker
+```
+Установка драйверов NVIDIA (если не установлены):
+```bash
+sudo ubuntu-drivers autoinstall
+sudo reboot
 ```
 Проверка GPU в контейнере:
 ```bash
+# Современный способ
+docker run --rm --gpus all nvidia/cuda:12.6.2-base-ubuntu24.04 nvidia-smi
+
+# Способ, совместимый с --runtime=nvidia
+docker run --rm --runtime=nvidia nvidia/cuda:12.6.2-base-ubuntu24.04 nvidia-smi
+
+# Если 24.04 тег недоступен, используйте 22.04
 docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
