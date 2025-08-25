@@ -24,6 +24,74 @@ def _ensure_python_packages():
         "requests",
     ]
 
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    def _in_virtualenv() -> bool:
+        try:
+            return sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+        except Exception:
+            return False
+
+    def _venv_paths(venv_dir: str) -> tuple:
+        bin_dir = "Scripts" if os.name == "nt" else "bin"
+        py = os.path.join(venv_dir, bin_dir, "python")
+        pip = os.path.join(venv_dir, bin_dir, "pip")
+        return py, pip
+
+    def _can_run_sudo_non_interactive() -> bool:
+        sudo = shutil.which("sudo")
+        if not sudo:
+            return False
+        try:
+            return subprocess.call([sudo, "-n", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+        except Exception:
+            return False
+
+    def _create_venv(venv_dir: str, py_exec: str) -> bool:
+        try:
+            rc = subprocess.call([py_exec, "-m", "venv", venv_dir])
+            if rc != 0:
+                # Try to install python3-venv if possible (Ubuntu/Debian only with privileges)
+                apt_get = shutil.which("apt-get")
+                is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+                if apt_get and (is_root or _can_run_sudo_non_interactive()):
+                    print("[INFO] Installing python3-venv to create an isolated environment...")
+                    base = [] if is_root else ["sudo", "-n"]
+                    try:
+                        subprocess.call(base + [apt_get, "update", "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.call(base + [apt_get, "install", "-y", "python3-venv"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        rc = subprocess.call([py_exec, "-m", "venv", venv_dir])
+                    except Exception:
+                        pass
+            if rc != 0:
+                return False
+            # Ensure pip inside venv
+            venv_python, _ = _venv_paths(venv_dir)
+            if subprocess.call([venv_python, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+                try:
+                    import ensurepip  # noqa: F401
+                    subprocess.call([venv_python, "-m", "ensurepip", "--upgrade"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+            if subprocess.call([venv_python, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+                # get-pip.py into venv
+                _install_pip_via_get_pip(venv_python, use_user=False)
+            return True
+        except Exception:
+            return False
+
+    def _reexec_in_venv(venv_dir: str):
+        venv_python, _ = _venv_paths(venv_dir)
+        if not os.path.exists(venv_python):
+            return False
+        env = os.environ.copy()
+        env["GPUNIQ_AGENT_REEXEC"] = "1"
+        try:
+            os.execvpe(venv_python, [venv_python, os.path.abspath(__file__), *sys.argv[1:]], env)
+        except Exception:
+            return False
+        return True
+
     def _has_pip(py_exec: str) -> bool:
         try:
             return subprocess.call([py_exec, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
@@ -79,7 +147,7 @@ def _ensure_python_packages():
         except Exception:
             is_root = False
 
-        # Ensure we have pip first
+        # Ensure we have pip first (or create an isolated venv to avoid PEP 668)
         if not _has_pip(python_executable):
             tried_any = False
             # Try ensurepip
@@ -91,19 +159,28 @@ def _ensure_python_packages():
                 pass
             # Recheck
             if not _has_pip(python_executable):
-                # Try apt-get only if root or sudo non-interactive works
+                # Prefer creating local venv to bypass system restrictions
+                venv_dir = os.path.join(script_dir, ".venv")
+                if not _in_virtualenv():
+                    if not os.path.exists(venv_dir):
+                        if _create_venv(venv_dir, python_executable):
+                            # Install all requirements into venv and re-exec
+                            venv_python, _ = _venv_paths(venv_dir)
+                            try:
+                                subprocess.call([venv_python, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                subprocess.check_call([venv_python, "-m", "pip", "install", "--no-cache-dir", *required_packages])
+                            except Exception:
+                                pass
+                            _reexec_in_venv(venv_dir)
+                    else:
+                        # Existing venv: attempt re-exec directly
+                        _reexec_in_venv(venv_dir)
+                # Try apt-get only if root or sudo non-interactive works (fallback)
                 apt_get = shutil.which("apt-get")
-                sudo = shutil.which("sudo")
-                sudo_ok = False
-                try:
-                    if sudo and not is_root:
-                        sudo_ok = subprocess.call([sudo, "-n", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
-                except Exception:
-                    sudo_ok = False
-                if apt_get and (is_root or sudo_ok):
+                if apt_get and (is_root or _can_run_sudo_non_interactive()):
                     print("[INFO] Installing python3-pip via apt to proceed with dependency installation...")
                     try:
-                        base = [] if is_root else [sudo, "-n"]
+                        base = [] if is_root else ["sudo", "-n"]
                         subprocess.call(base + [apt_get, "update", "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                         subprocess.call(base + [apt_get, "install", "-y", "python3-pip"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     except Exception:
@@ -145,6 +222,20 @@ def _ensure_python_packages():
                     continue
             except Exception:
                 pass
+            # Last fallback: create venv and re-exec if not already in venv
+            venv_dir = os.path.join(script_dir, ".venv")
+            if not _in_virtualenv():
+                if not os.path.exists(venv_dir):
+                    if _create_venv(venv_dir, python_executable):
+                        venv_python, _ = _venv_paths(venv_dir)
+                        try:
+                            subprocess.call([venv_python, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            subprocess.check_call([venv_python, "-m", "pip", "install", "--no-cache-dir", *required_packages])
+                        except Exception:
+                            pass
+                        _reexec_in_venv(venv_dir)
+                else:
+                    _reexec_in_venv(venv_dir)
             print(f"[ERROR] Could not install required package '{package_name}'. "
                   f"Please ensure network access or install manually: {python_executable} -m pip install --user {package_name}")
             sys.exit(1)
