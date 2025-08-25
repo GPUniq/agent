@@ -133,10 +133,16 @@ def _ensure_python_packages():
 
         def _pip_install(use_user: bool) -> int:
             cmd = [python_executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", package_name]
-            if use_user:
+            # Avoid --user inside virtualenvs; prefer user install on system python
+            if use_user and not _in_virtualenv():
                 cmd.append("--user")
+            # If running against externally-managed system Python, allow breaking system packages
+            env = os.environ.copy()
+            if not _in_virtualenv():
+                cmd.append("--break-system-packages")
+                env.setdefault("PIP_BREAK_SYSTEM_PACKAGES", "1")
             try:
-                return subprocess.call(cmd)
+                return subprocess.call(cmd, env=env)
             except Exception:
                 return 1
 
@@ -237,7 +243,7 @@ def _ensure_python_packages():
                 else:
                     _reexec_in_venv(venv_dir)
             print(f"[ERROR] Could not install required package '{package_name}'. "
-                  f"Please ensure network access or install manually: {python_executable} -m pip install --user {package_name}")
+                  f"Please ensure network access or install manually: {python_executable} -m pip install --user --break-system-packages {package_name}")
             sys.exit(1)
 
 
