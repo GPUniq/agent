@@ -5,11 +5,88 @@ import sys
 import os
 import time
 import json
-import psutil
 import threading
 import subprocess
 import socket
 import re
+import importlib
+import shutil
+
+def _ensure_python_packages():
+    """Ensure required third-party Python packages are installed before imports.
+    Installs missing packages using pip; attempts ensurepip if pip is unavailable.
+    On Debian/Ubuntu, tries apt-get python3-pip if needed. Exits on failure.
+    """
+    required_packages = [
+        "psutil",
+        "requests",
+    ]
+
+    for package_name in required_packages:
+        try:
+            importlib.import_module(package_name)
+            continue
+        except ImportError:
+            print(f"[INFO] Missing Python package '{package_name}', attempting to install...")
+
+        python_executable = sys.executable or "python3"
+
+        def _pip_install(use_user: bool) -> int:
+            cmd = [python_executable, "-m", "pip", "install", "--upgrade", "--no-cache-dir", package_name]
+            if use_user:
+                cmd.append("--user")
+            try:
+                return subprocess.call(cmd)
+            except Exception:
+                return 1
+
+        # Try pip install (prefer --user if not root)
+        is_root = False
+        try:
+            is_root = hasattr(os, "geteuid") and os.geteuid() == 0
+        except Exception:
+            is_root = False
+
+        rc = _pip_install(use_user=not is_root)
+
+        # If pip missing, try ensurepip then install again
+        if rc != 0:
+            try:
+                import ensurepip  # type: ignore
+                ensurepip.bootstrap()
+                rc = _pip_install(use_user=not is_root)
+            except Exception:
+                pass
+
+        # On Debian/Ubuntu, attempt to install python3-pip via apt-get
+        if rc != 0:
+            apt_get = shutil.which("apt-get")
+            if apt_get:
+                print("[INFO] Installing python3-pip via apt to proceed with dependency installation...")
+                try:
+                    # Use sudo if available and not root; run non-interactively
+                    sudo = shutil.which("sudo")
+                    base = [] if is_root else ([sudo, "-n"] if sudo else [])
+                    if base:
+                        subprocess.call(base + [apt_get, "update", "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.call(base + [apt_get, "install", "-y", "python3-pip"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    else:
+                        subprocess.call([apt_get, "update", "-y"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.call([apt_get, "install", "-y", "python3-pip"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+                rc = _pip_install(use_user=not is_root)
+
+        if rc != 0:
+            print(f"[ERROR] Could not install required package '{package_name}'. "
+                  f"Please install it manually using: {python_executable} -m pip install {package_name}")
+            sys.exit(1)
+
+
+# Ensure dependencies before importing third-party modules elsewhere
+_ensure_python_packages()
+
+import psutil
 from typing import Dict, Any, Optional
 
 from hardware_analyzer import HardwareAnalyzer
