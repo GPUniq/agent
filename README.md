@@ -2,11 +2,24 @@
 
 Интеллектуальный агент для подключения к GPUniq
 
-### Требования
-- Python 3.8+
-- Docker установлен и доступен в системе (для запуска контейнеров)
+### Платформа
+- Ubuntu 24.04 LTS
 
-### Быстрый старт
+### Предварительная установка (Ubuntu 24.04)
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip
+
+# Docker (рекомендуется для запуска контейнеров)
+sudo apt install -y docker.io
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+newgrp docker
+# Проверка
+docker ps
+```
+
+### Быстрый старт (Ubuntu 24.04)
 
 1. Клонирование репозитория
 ```bash
@@ -24,13 +37,8 @@ python3 -m venv .venv
 ```
 
 4. Активация виртуального окружения
-- macOS/Linux:
 ```bash
 source .venv/bin/activate
-```
-- Windows (PowerShell):
-```bash
-.venv\Scripts\Activate.ps1
 ```
 
 5. Установка зависимостей
@@ -38,7 +46,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-6. Запуск агента через nohup (в фоне)
+6. Запуск агента в фоне через nohup
 ```bash
 nohup python3 agent.py <YOUR_SECRET_KEY> > agent.log 2>&1 &
 ```
@@ -48,10 +56,10 @@ nohup python3 agent.py <YOUR_SECRET_KEY> > agent.log 2>&1 &
 tail -f agent.log
 ```
 
-Отключение виртуального окружения:
+Остановка процесса (пример):
 ```bash
-deactivate
+pkill -f "python3 agent.py"
 ```
 
 ---
-Исходный код: https://github.com/GPUniq/agent.git 
+Репозиторий: https://github.com/GPUniq/agent.git 
