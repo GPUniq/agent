@@ -9,14 +9,63 @@
 ```bash
 sudo apt update
 sudo apt install -y git python3 python3-venv python3-pip
+```
 
-# Docker (рекомендуется для запуска контейнеров)
-sudo apt install -y docker.io
+### Установка Docker (Ubuntu 24.04)
+
+Рекомендуемый способ — через официальный репозиторий Docker.
+
+1) Удалить старые пакеты (если были):
+```bash
+sudo apt remove -y docker docker-engine docker.io containerd runc || true
+```
+
+2) Зависимости и ключ репозитория Docker:
+```bash
+sudo apt update
+sudo apt install -y ca-certificates curl gnupg
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+```
+
+3) Подключить репозиторий Docker и установить пакеты:
+```bash
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release; echo $VERSION_CODENAME) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+```
+
+4) Запуск и доступ без sudo:
+```bash
 sudo systemctl enable --now docker
 sudo usermod -aG docker $USER
 newgrp docker
-# Проверка
-docker ps
+```
+
+5) Проверка:
+```bash
+docker --version
+docker run --rm hello-world
+```
+
+### NVIDIA Container Toolkit
+
+Если планируется запуск контейнеров с GPU (NVIDIA), установите Toolkit:
+```bash
+distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit.gpg
+curl -fsSL https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | \
+  sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit.gpg] https://#g' | \
+  sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt update
+sudo apt install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+```
+Проверка GPU в контейнере:
+```bash
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
 ```
 
 ### Быстрый старт (Ubuntu 24.04)
