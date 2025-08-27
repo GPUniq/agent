@@ -295,8 +295,47 @@ class Agent:
             
             task_data = task.get('task_data', {})
             container_info = task.get('container_info', {})
+
+            # Обработка управляющих операций: stop / stop_remove
+            operation = (task_data.get('operation') or '').strip().lower()
+            if operation in {'stop', 'stop_remove'}:
+                container_id = task_data.get('container_id') or container_info.get('container_id')
+                container_name = task_data.get('container_name') or container_info.get('container_name')
+                if not container_id:
+                    print("[ERROR] CONTROL task missing container_id")
+                    return {
+                        'status': 'failed',
+                        'container_id': '',
+                        'container_name': container_name,
+                        'error_message': 'Missing container_id in control task'
+                    }
+
+                print(f"[INFO] Control operation: {operation} for container_id={container_id}")
+                stop_ok = self.container_manager.stop_by_id(container_id)
+                remove_ok = True
+                if operation == 'stop_remove':
+                    remove_ok = self.container_manager.remove_by_id(container_id)
+
+                if stop_ok and remove_ok:
+                    return {
+                        'status': 'completed',
+                        'container_id': container_id,
+                        'container_name': container_name
+                    }
+                else:
+                    err = []
+                    if not stop_ok:
+                        err.append('stop failed')
+                    if operation == 'stop_remove' and not remove_ok:
+                        err.append('remove failed')
+                    return {
+                        'status': 'failed',
+                        'container_id': container_id,
+                        'container_name': container_name,
+                        'error_message': ", ".join(err) or 'unknown error'
+                    }
             
-            # Получаем docker_image и ресурсы из task_data
+            # Получаем docker_image и ресурсы из task_data (для START)
             docker_image = task_data.get('docker_image')
             if not docker_image:
                 print("[ERROR] No docker_image specified in task")

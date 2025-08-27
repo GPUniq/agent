@@ -183,7 +183,15 @@ class APIClient:
                 time.sleep(10)
     
     def send_task_status(self, task_id: str, container_info: Dict[str, Any]) -> bool:
-        """Отправляет статус задачи"""
+        """Отправляет статус задачи
+        Ожидает поля в container_info:
+          - status: "running" | "completed" | "failed"
+          - container_id: str
+          - container_name: optional
+          - error_message: optional (для failed)
+          - ssh_host/ssh_port/ssh_command: используются только для running-логики START
+        Если статус не указан, по умолчанию отправляется running (совместимость).
+        """
         if not self.agent_id:
             print("[ERROR] Agent ID not set")
             return False
@@ -191,14 +199,24 @@ class APIClient:
         url = f"{self.base_url}/v1/agents/{self.agent_id}/tasks/{task_id}/status"
         headers = self._get_headers()
         
+        status = container_info.get("status") or "running"
         data = {
-            "status": "running",
-            "progress": 0.0,
-            "output": f"Container {container_info['container_name']} started successfully. SSH ready on {container_info['ssh_host']}:{container_info['ssh_port']}",
-            "error_message": None,
-            "container_id": container_info['container_id'],
-            "container_name": container_info['container_name']
+            "status": status,
+            "container_id": container_info.get('container_id'),
         }
+        if container_info.get('container_name') is not None:
+            data["container_name"] = container_info.get('container_name')
+        if status == "running":
+            # Совместимость: добавляем прогресс и output если известны ssh_host/port
+            ssh_host = container_info.get('ssh_host')
+            ssh_port = container_info.get('ssh_port')
+            cname = container_info.get('container_name')
+            data["progress"] = 0.0
+            if ssh_host and ssh_port and cname:
+                data["output"] = f"Container {cname} started successfully. SSH ready on {ssh_host}:{ssh_port}"
+        elif status == "failed":
+            if container_info.get('error_message'):
+                data["error_message"] = container_info.get('error_message')
         
         try:
             response = self.session.post(url, headers=headers, json=data, timeout=10)
@@ -208,11 +226,17 @@ class APIClient:
                 resp_json = response.json()
                 if resp_json.get('exception') == 0:
                     print(f"[INFO] Task status updated successfully")
-                    print(f"[INFO] Container ID: {container_info['container_id']}")
-                    print(f"[INFO] Container Name: {container_info['container_name']}")
-                    print(f"[INFO] SSH Command: {container_info['ssh_command']}")
-                    print(f"[INFO] Username: {container_info.get('ssh_username', 'root')}")
-                    print(f"[INFO] Password: {container_info.get('ssh_password', '')}")
+                    if container_info.get('container_id'):
+                        print(f"[INFO] Container ID: {container_info['container_id']}")
+                    if container_info.get('container_name'):
+                        print(f"[INFO] Container Name: {container_info['container_name']}")
+                    if status == 'running':
+                        if container_info.get('ssh_command'):
+                            print(f"[INFO] SSH Command: {container_info['ssh_command']}")
+                        if container_info.get('ssh_username'):
+                            print(f"[INFO] Username: {container_info.get('ssh_username', 'root')}")
+                        if container_info.get('ssh_password'):
+                            print(f"[INFO] Password: {container_info.get('ssh_password', '')}")
                     return True
                 else:
                     print(f"[WARNING] Server returned exception: {resp_json.get('message', 'Unknown error')}")

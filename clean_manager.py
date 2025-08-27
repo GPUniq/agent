@@ -193,6 +193,43 @@ class ContainerManager:
             else:
                 print("[INFO] Контейнер не найден:", container_name)
 
+    def stop_by_id(self, container_id: str) -> bool:
+        """
+        Остановить контейнер по ID/имени. Идемпотентно: если уже остановлен или не найден — считаем успехом.
+        Возвращает True при успешной/идемпотентной остановке, иначе False.
+        """
+        try:
+            cp = self._run(["docker", "stop", container_id], check=False, capture_output=True, quiet=True)
+            if cp.returncode == 0:
+                return True
+            err_out = f"{cp.stderr or ''}{cp.stdout or ''}"
+            # Если контейнер уже не найден или не запущен — операция идемпотентна
+            if "No such container" in err_out or "is not running" in err_out:
+                return True
+            print(f"[ERROR] docker stop failed for {container_id}: {err_out.strip()}")
+            return False
+        except Exception as e:
+            print(f"[ERROR] Exception while stopping {container_id}: {e}")
+            return False
+
+    def remove_by_id(self, container_id: str) -> bool:
+        """
+        Удалить контейнер по ID/имени. Идемпотентно: если контейнера нет — считаем успехом.
+        Возвращает True при успешном/идемпотентном удалении, иначе False.
+        """
+        try:
+            cp = self._run(["docker", "rm", container_id], check=False, capture_output=True, quiet=True)
+            if cp.returncode == 0:
+                return True
+            err_out = f"{cp.stderr or ''}{cp.stdout or ''}"
+            if "No such container" in err_out:
+                return True
+            print(f"[ERROR] docker rm failed for {container_id}: {err_out.strip()}")
+            return False
+        except Exception as e:
+            print(f"[ERROR] Exception while removing {container_id}: {e}")
+            return False
+
     def wait_for_ssh_ready(self, host: str, port: int, timeout: int = 60) -> bool:
         """Ждет, пока SSH сервис будет готов к подключению"""
         import time
