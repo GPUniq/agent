@@ -101,7 +101,7 @@ class APIClient:
         
         while True:
             try:
-                print(f"[DEBUG] Polling for tasks from {url}")
+                # print(f"[DEBUG] Polling for tasks from {url}")
                 response = self.session.post(url, headers=headers, timeout=15)
                 
                 if response.status_code == 200:
@@ -120,7 +120,7 @@ class APIClient:
                     container_info = data.get('container_info')
                     message = data.get('message', '')
                     
-                    print(f"[INFO] Server response: {message}")
+                    # print(f"[INFO] Server response: {message}")
                     
                     if task_id is not None and task_data is not None and container_info is not None:
                         print(f"[INFO] New task received:")
@@ -155,14 +155,14 @@ class APIClient:
                             consecutive_errors += 1
                             
                     elif task_id is None:
-                        print(f"[INFO] No tasks available: {message}")
+                        # print(f"[INFO] No tasks available: {message}")
                         consecutive_errors = 0
                     else:
                         print(f"[WARNING] Invalid task data received: {data}")
                         consecutive_errors += 1
                 else:
                     print(f"[WARNING] Server returned status {response.status_code}")
-                    print(f"[DEBUG] Server response: {response.text}")
+                    # print(f"[DEBUG] Server response: {response.text}")
                     consecutive_errors += 1
                     
             except requests.exceptions.Timeout:
