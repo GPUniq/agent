@@ -303,6 +303,10 @@ class Agent:
                 container_name = task_data.get('container_name') or container_info.get('container_name')
                 if not container_id:
                     print("[ERROR] CONTROL task missing container_id")
+                    try:
+                        self.api_client.send_log("control task error: missing container_id")
+                    except Exception:
+                        pass
                     return {
                         'status': 'failed',
                         'container_id': '',
@@ -311,12 +315,20 @@ class Agent:
                     }
 
                 print(f"[INFO] Control operation: {operation} for container_id={container_id}")
+                try:
+                    self.api_client.send_log(f"control task received: op={operation} container_id={container_id}")
+                except Exception:
+                    pass
                 stop_ok = self.container_manager.stop_by_id(container_id)
                 remove_ok = True
                 if operation == 'stop_remove':
                     remove_ok = self.container_manager.remove_by_id(container_id)
 
                 if stop_ok and remove_ok:
+                    try:
+                        self.api_client.send_log(f"control task completed: op={operation} container_id={container_id}")
+                    except Exception:
+                        pass
                     return {
                         'status': 'completed',
                         'container_id': container_id,
@@ -328,6 +340,10 @@ class Agent:
                         err.append('stop failed')
                     if operation == 'stop_remove' and not remove_ok:
                         err.append('remove failed')
+                    try:
+                        self.api_client.send_log(f"control task failed: op={operation} container_id={container_id} error={', '.join(err) or 'unknown'}")
+                    except Exception:
+                        pass
                     return {
                         'status': 'failed',
                         'container_id': container_id,
@@ -339,6 +355,10 @@ class Agent:
             docker_image = task_data.get('docker_image')
             if not docker_image:
                 print("[ERROR] No docker_image specified in task")
+                try:
+                    self.api_client.send_log("task error: docker_image not specified")
+                except Exception:
+                    pass
                 return None
 
             # GPU allocation
@@ -398,6 +418,10 @@ class Agent:
             # Username больше не обязателен; требуем только пароль и порт
             if not all([ssh_password, ssh_port]):
                 print("[ERROR] Missing SSH credentials in container_info")
+                try:
+                    self.api_client.send_log("task error: missing ssh credentials")
+                except Exception:
+                    pass
                 return None
             
             print(f"[INFO] Using SSH credentials from task:")
@@ -417,6 +441,10 @@ class Agent:
             jup_port = ssh_port + 1
 
             # Используем ContainerManager для создания контейнера
+            try:
+                self.api_client.send_log(f"task start requested: id={task_id} image={docker_image}")
+            except Exception:
+                pass
             container_id = self.container_manager.start(
                 container_name=container_name,
                 ssh_port=ssh_port,
@@ -460,21 +488,40 @@ class Agent:
             print(f"  SSH Port: {result['ssh_port']}")
             print(f"  SSH Command: {result['ssh_command']}")
             print(f"  Allocated Resources: {result.get('allocated_resources', 'N/A')}")
+            try:
+                self.api_client.send_log(f"container started: id={result['container_id']} name={result['container_name']}")
+            except Exception:
+                pass
             
             return result
                 
         except Exception as e:
             print(f"[ERROR] Task processing failed: {e}")
+            try:
+                self.api_client.send_log(f"task processing exception: {e}")
+            except Exception:
+                pass
             return None
     
     def initialize(self) -> bool:
         """Инициализирует агента"""
         print("[INFO] Initializing agent...")
+        try:
+            # Если известен agent_id, сообщаем о старте init
+            if self.api_client.agent_id:
+                self.api_client.send_log("agent init started")
+        except Exception:
+            pass
         
         # Проверяем и устанавливаем Docker (только один раз при инициализации)
         print("[INFO] Checking Docker installation...")
         if not self.container_manager.check_and_install_docker():
             print("[ERROR] Docker is required but not available. Please install Docker and restart the script.")
+            try:
+                if self.api_client.agent_id:
+                    self.api_client.send_log("agent init error: docker not available")
+            except Exception:
+                pass
             return False
         
         # Проверяем и исправляем права Docker (только один раз при инициализации)
@@ -508,11 +555,23 @@ class Agent:
                     self.agent_id = agent_id
                     self.api_client.set_credentials(agent_id, self.secret_key)
                     self._save_agent_id(agent_id)
+                    try:
+                        self.api_client.send_log("agent confirmed")
+                    except Exception:
+                        pass
                 else:
                     print("[ERROR] Could not obtain agent_id from server. Exiting.")
+                    try:
+                        self.api_client.send_log("agent confirm failed: no id")
+                    except Exception:
+                        pass
                     return False
             except Exception as e:
                 print(f"[ERROR] Failed to confirm agent: {e}")
+                try:
+                    self.api_client.send_log(f"agent confirm exception: {e}")
+                except Exception:
+                    pass
                 return False
         
         # Отправляем init данные
@@ -520,13 +579,28 @@ class Agent:
         try:
             success = self.api_client.send_init_data(system_data)
             if success:
-                print("[INFO] Init data sent successfully")
+                try:
+                    self.api_client.send_log("agent init sent")
+                except Exception:
+                    pass
             else:
                 print("[WARNING] Failed to send init data, but continuing...")
+                try:
+                    self.api_client.send_log("agent init send failed")
+                except Exception:
+                    pass
         except Exception as e:
             print(f"[ERROR] Failed to send init data: {e}")
             # Продолжаем работу даже если init не удался
+            try:
+                self.api_client.send_log(f"agent init send exception: {e}")
+            except Exception:
+                pass
         
+        try:
+            self.api_client.send_log("agent init completed")
+        except Exception:
+            pass
         return True
     
     def run(self):
@@ -536,6 +610,11 @@ class Agent:
         # Инициализируем агента
         if not self.initialize():
             print("[ERROR] Agent initialization failed")
+            try:
+                if self.api_client.agent_id:
+                    self.api_client.send_log("agent start failed: init failed")
+            except Exception:
+                pass
             return
         
         # Запускаем polling в отдельном потоке
@@ -543,8 +622,16 @@ class Agent:
         try:
             polling_thread = self.api_client.start_polling_thread(self.process_task)
             print("[INFO] Polling thread started successfully")
+            try:
+                self.api_client.send_log("polling started")
+            except Exception:
+                pass
         except Exception as e:
             print(f"[ERROR] Failed to start polling thread: {e}")
+            try:
+                self.api_client.send_log(f"polling start exception: {e}")
+            except Exception:
+                pass
             return
         
         print("[INFO] Agent initialization completed. Starting main loop...")
@@ -560,22 +647,38 @@ class Agent:
                 
                 # Каждые 5 минут отправляем heartbeat
                 if heartbeat_counter >= 5:
-                    print("[INFO] Sending heartbeat...")
                     try:
                         monitoring_data = self.collect_monitoring_data()
                         self.api_client.send_heartbeat(monitoring_data)
                     except Exception as e:
                         print(f"[WARNING] Heartbeat failed: {e}")
+                        try:
+                            self.api_client.send_log(f"heartbeat exception: {e}")
+                        except Exception:
+                            pass
                     heartbeat_counter = 0
                     
         except KeyboardInterrupt:
             print("[INFO] Received interrupt signal. Shutting down...")
+            try:
+                self.api_client.send_log("agent stopping: interrupt")
+            except Exception:
+                pass
         except Exception as e:
             print(f"[ERROR] Main loop error: {e}")
+            try:
+                self.api_client.send_log(f"agent main loop exception: {e}")
+            except Exception:
+                pass
         finally:
             # Закрываем соединения
             self.api_client.close()
             print("[INFO] Agent shutdown completed")
+            try:
+                if self.api_client.agent_id:
+                    self.api_client.send_log("agent stopped")
+            except Exception:
+                pass
 
 
 def main():

@@ -33,6 +33,22 @@ class APIClient:
             headers["X-Agent-Secret-Key"] = self.secret_key
         return headers
     
+    def send_log(self, message: str) -> bool:
+        """Отправляет короткое лог-сообщение на бэкенд
+        POST /v1/agents/{agent_id}/logs, body {"message": "..."}
+        """
+        if not self.agent_id:
+            return False
+        url = f"{self.base_url}/v1/agents/{self.agent_id}/logs"
+        # Логи не требуют аутентификацию; отправляем только content-type
+        headers = {"Content-Type": "application/json"}
+        try:
+            resp = self.session.post(url, headers=headers, json={"message": str(message)}, timeout=5)
+            return resp.status_code == 200
+        except Exception:
+            # Ничего не печатаем и не ретраим, чтобы не зациклиться
+            return False
+    
     def confirm_agent(self, data: Dict[str, Any]) -> Optional[str]:
         """Подтверждает агента на сервере и получает agent_id"""
         url = f"{self.base_url}/v1/agents/confirm"
@@ -40,8 +56,6 @@ class APIClient:
         
         try:
             response = self.session.post(url, headers=headers, json=data, timeout=10)
-            print(f"[INFO] Confirm response: {response.status_code}")
-            print(response.text)
             
             resp_json = response.json()
             agent_id = None
@@ -55,6 +69,11 @@ class APIClient:
             
         except Exception as e:
             print(f"[ERROR] Failed to confirm agent: {e}")
+            # Отправляем ошибку в логи, если уже есть agent_id
+            try:
+                self.send_log(f"confirm_agent error: {e}")
+            except Exception:
+                pass
             return None
     
     def send_init_data(self, data: Dict[str, Any]) -> bool:
@@ -68,23 +87,32 @@ class APIClient:
         
         try:
             response = self.session.post(url, headers=headers, json=data, timeout=10)
-            print(f"[INFO] Init response: {response.status_code}")
-            print(response.text)
             
             if response.status_code == 200:
                 resp_json = response.json()
                 if resp_json.get('exception') == 0:
-                    print("[INFO] Init data sent successfully")
                     return True
                 else:
                     print(f"[WARNING] Server returned exception: {resp_json.get('message', 'Unknown error')}")
+                    try:
+                        self.send_log(f"init exception: {resp_json.get('message', 'Unknown error')}")
+                    except Exception:
+                        pass
                     return False
             else:
                 print(f"[ERROR] Init failed with status {response.status_code}")
+                try:
+                    self.send_log(f"init failed with status {response.status_code}")
+                except Exception:
+                    pass
                 return False
                 
         except Exception as e:
             print(f"[ERROR] Failed to send init data: {e}")
+            try:
+                self.send_log(f"init error: {e}")
+            except Exception:
+                pass
             return False
     
     def poll_for_tasks(self, callback: callable) -> None:
@@ -110,6 +138,10 @@ class APIClient:
                     # Проверяем exception поле
                     if resp_json.get('exception') != 0:
                         print(f"[WARNING] Server returned exception: {resp_json.get('message', 'Unknown error')}")
+                        try:
+                            self.send_log(f"poll exception: {resp_json.get('message', 'Unknown error')}")
+                        except Exception:
+                            pass
                         consecutive_errors += 1
                         time.sleep(10)
                         continue
@@ -132,6 +164,11 @@ class APIClient:
                         print(f"  SSH Username: {container_info.get('ssh_username')}")
                         print(f"  SSH Port: {container_info.get('ssh_port')}")
                         print(f"  SSH Command: {container_info.get('ssh_command')}")
+                        try:
+                            op = (task_data.get('operation') or 'start').strip().lower()
+                            self.send_log(f"task received: id={task_id} op={op}")
+                        except Exception:
+                            pass
                         
                         # Создаем полную задачу
                         full_task = {
@@ -149,9 +186,17 @@ class APIClient:
                                 consecutive_errors = 0
                             else:
                                 print(f"[ERROR] Failed to process task {task_id}")
+                                try:
+                                    self.send_log(f"task process failed: id={task_id}")
+                                except Exception:
+                                    pass
                                 consecutive_errors += 1
                         except Exception as e:
                             print(f"[ERROR] Task processing failed: {e}")
+                            try:
+                                self.send_log(f"task processing exception: id={task_id} error={e}")
+                            except Exception:
+                                pass
                             consecutive_errors += 1
                             
                     elif task_id is None:
@@ -159,20 +204,40 @@ class APIClient:
                         consecutive_errors = 0
                     else:
                         print(f"[WARNING] Invalid task data received: {data}")
+                        try:
+                            self.send_log("invalid task data received")
+                        except Exception:
+                            pass
                         consecutive_errors += 1
                 else:
                     print(f"[WARNING] Server returned status {response.status_code}")
                     # print(f"[DEBUG] Server response: {response.text}")
+                    try:
+                        self.send_log(f"poll failed with status {response.status_code}")
+                    except Exception:
+                        pass
                     consecutive_errors += 1
                     
             except requests.exceptions.Timeout:
                 print("[WARNING] Request timeout, retrying...")
+                try:
+                    self.send_log("poll timeout")
+                except Exception:
+                    pass
                 consecutive_errors += 1
             except requests.exceptions.ConnectionError:
                 print("[WARNING] Connection error, retrying...")
+                try:
+                    self.send_log("poll connection error")
+                except Exception:
+                    pass
                 consecutive_errors += 1
             except Exception as e:
                 print(f"[ERROR] Polling failed: {e}")
+                try:
+                    self.send_log(f"poll exception: {e}")
+                except Exception:
+                    pass
                 consecutive_errors += 1
             
             # Если слишком много ошибок подряд, увеличиваем интервал
@@ -220,33 +285,32 @@ class APIClient:
         
         try:
             response = self.session.post(url, headers=headers, json=data, timeout=10)
-            print(f"[INFO] Task status updated: {response.status_code}")
             
             if response.status_code == 200:
                 resp_json = response.json()
                 if resp_json.get('exception') == 0:
-                    print(f"[INFO] Task status updated successfully")
-                    if container_info.get('container_id'):
-                        print(f"[INFO] Container ID: {container_info['container_id']}")
-                    if container_info.get('container_name'):
-                        print(f"[INFO] Container Name: {container_info['container_name']}")
-                    if status == 'running':
-                        if container_info.get('ssh_command'):
-                            print(f"[INFO] SSH Command: {container_info['ssh_command']}")
-                        if container_info.get('ssh_username'):
-                            print(f"[INFO] Username: {container_info.get('ssh_username', 'root')}")
-                        if container_info.get('ssh_password'):
-                            print(f"[INFO] Password: {container_info.get('ssh_password', '')}")
                     return True
                 else:
                     print(f"[WARNING] Server returned exception: {resp_json.get('message', 'Unknown error')}")
+                    try:
+                        self.send_log(f"task status exception: id={task_id} msg={resp_json.get('message', 'Unknown error')}")
+                    except Exception:
+                        pass
                     return False
             else:
                 print(f"[WARNING] Server returned status {response.status_code}: {response.text}")
+                try:
+                    self.send_log(f"task status failed: id={task_id} status={response.status_code}")
+                except Exception:
+                    pass
                 return False
                 
         except Exception as e:
             print(f"[ERROR] Failed to update task status: {e}")
+            try:
+                self.send_log(f"task status exception: id={task_id} error={e}")
+            except Exception:
+                pass
             return False
     
     def send_heartbeat(self, monitoring_data: Dict[str, Any]) -> bool:
@@ -269,17 +333,28 @@ class APIClient:
             if response.status_code == 200:
                 resp_json = response.json()
                 if resp_json.get('exception') == 0:
-                    print(f"[INFO] Heartbeat sent successfully")
                     return True
                 else:
                     print(f"[WARNING] Heartbeat failed: {resp_json.get('message', 'Unknown error')}")
+                    try:
+                        self.send_log(f"heartbeat exception: {resp_json.get('message', 'Unknown error')}")
+                    except Exception:
+                        pass
                     return False
             else:
                 print(f"[WARNING] Heartbeat failed with status {response.status_code}")
+                try:
+                    self.send_log(f"heartbeat failed with status {response.status_code}")
+                except Exception:
+                    pass
                 return False
                 
         except Exception as e:
             print(f"[ERROR] Failed to send heartbeat: {e}")
+            try:
+                self.send_log(f"heartbeat exception: {e}")
+            except Exception:
+                pass
             return False
     
     def start_polling_thread(self, callback: callable) -> threading.Thread:
