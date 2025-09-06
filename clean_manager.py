@@ -28,7 +28,16 @@ class ContainerManager:
     def _run(self, args: List[str], check: bool = True, capture_output: bool = False, quiet: bool = False) -> subprocess.CompletedProcess:
         if not quiet:
             print("[RUN]", " ".join(args))
-        return subprocess.run(args, check=check, capture_output=capture_output, text=True)
+        try:
+            return subprocess.run(args, check=check, capture_output=capture_output, text=True)
+        except subprocess.CalledProcessError as e:
+            if not quiet:
+                print(f"[ERROR] Command failed with return code {e.returncode}")
+            raise
+        except Exception as e:
+            if not quiet:
+                print(f"[ERROR] Command execution failed: {e}")
+            raise
 
     def _exists(self, name: str) -> bool:
         out = self._run(["docker", "ps", "-a", "--format", "{{.Names}}"], capture_output=True).stdout.splitlines()
@@ -44,8 +53,21 @@ class ContainerManager:
             print(f"[OK]   Образ найден: {image}")
             return True
         else:
-            print(f"[ERR]  Образ не найден: {image}")
-            return False
+            print(f"[INFO] Образ не найден локально: {image}")
+            print(f"[INFO] Пытаемся загрузить образ из интернета...")
+            try:
+                # Пытаемся загрузить образ из интернета
+                pull_result = self._run(["docker", "pull", image], check=False, capture_output=False, quiet=False)
+                if pull_result.returncode == 0:
+                    print(f"[OK]   Образ успешно загружен: {image}")
+                    return True
+                else:
+                    print(f"[ERR]  Не удалось загрузить образ: {image}")
+                    print(f"[ERR]  Проверьте доступность образа и подключение к интернету")
+                    return False
+            except Exception as e:
+                print(f"[ERR]  Ошибка при загрузке образа {image}: {e}")
+                return False
 
 
     def _container_name(self, xx: str) -> str:
@@ -106,8 +128,8 @@ class ContainerManager:
 
         if not self._docker_images_has(image_to_run):
             raise RuntimeError(
-                f"Образ '{image_to_run}' не найден локально. "
-                f"Собери его или docker pull (если публичный)."
+                f"Образ '{image_to_run}' недоступен. "
+                f"Проверьте подключение к интернету и доступность образа в реестре."
             )
 
         work_vol = f"{name}-work"
