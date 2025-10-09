@@ -148,7 +148,7 @@ class ContainerManager:
             "--name", name,
             "--runtime", self.s.runtime,
             "--ulimit", "memlock=-1", "--ulimit", f"stack={self.s.ulimit_stack}",
-            # shm-size (overridable)
+          
             "--shm-size", (f"{shm_size_gb}g" if shm_size_gb is not None else self.s.shm_size),
             "-p", f"{ssh_port}:22",
             "-p", f"{jup_port}:8888",
