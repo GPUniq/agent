@@ -23,7 +23,7 @@ AGENT_ID_FILE = ".agent_id"
 class Agent:
     """Основной класс агента"""
     
-    def __init__(self, secret_key: str, base_url: str = "https://api.gpuniq.ru"):
+    def __init__(self, secret_key: str, base_url: str = "https://devapi.gpuniq.ru"):
         self.secret_key = secret_key
         self.base_url = base_url
         self.agent_id = None

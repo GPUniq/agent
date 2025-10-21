@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List
 class APIClient:
     """Класс для взаимодействия с API gpuniq.ru"""
     
-    def __init__(self, base_url: str = "https://api.gpuniq.ru", agent_id: Optional[str] = None, secret_key: Optional[str] = None):
+    def __init__(self, base_url: str = "https://devapi.gpuniq.ru", agent_id: Optional[str] = None, secret_key: Optional[str] = None):
         self.base_url = base_url
         self.agent_id = agent_id
         self.secret_key = secret_key
